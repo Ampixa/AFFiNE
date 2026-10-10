@@ -41,7 +41,7 @@ try {
     }),
   });
   const output = typeof result === 'string' ? JSON.parse(result) : result;
-  if (output.result.model !== 'claude-haiku-4-5-20251001')
+  if (output.result.model !== 'claude-haiku-5-5')
     throw new Error('Unexpected AI model');
   console.log(JSON.stringify(output));
 } finally {

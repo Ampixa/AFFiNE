@@ -52,7 +52,7 @@ try {
             },
             models: [
               {
-                modelId: 'claude-haiku-4-5-20251001',
+                modelId: 'claude-haiku-5-5',
                 enabled: true,
                 capabilities: [
                   {
@@ -81,7 +81,7 @@ try {
     }
     if (
       profile.definition.models.length !== 1 ||
-      profile.definition.models[0].modelId !== 'claude-haiku-4-5-20251001'
+      profile.definition.models[0].modelId !== 'claude-haiku-5-5'
     ) {
       throw new Error('Existing profile is not Haiku-only');
     }
@@ -89,9 +89,9 @@ try {
       workspaceId,
       profileId: profile.profileId,
       checks: [
-        { modelId: 'claude-haiku-4-5-20251001', operation: 'chat' },
-        { modelId: 'claude-haiku-4-5-20251001', operation: 'structured' },
-        { modelId: 'claude-haiku-4-5-20251001', operation: 'tool_calling' },
+        { modelId: 'claude-haiku-5-5', operation: 'chat' },
+        { modelId: 'claude-haiku-5-5', operation: 'structured' },
+        { modelId: 'claude-haiku-5-5', operation: 'tool_calling' },
       ],
     });
     if (
