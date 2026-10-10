@@ -2,12 +2,14 @@ import {
   Button,
   Checkbox,
   Loading,
+  notify,
   templateToString,
   useConfirmModal,
   useDisposable,
 } from '@affine/component';
 import { Pagination } from '@affine/component/setting-components';
 import { BlobManagementService } from '@affine/core/modules/blob-management/services';
+import { UserFriendlyError } from '@affine/error';
 import { useI18n } from '@affine/i18n';
 import type { ListedBlobRecord } from '@affine/nbstore';
 import track from '@affine/track';
@@ -120,14 +122,20 @@ export const BlobManagementPanel = () => {
   const originalUnusedBlobs = useLiveData(unusedBlobsEntity.unusedBlobs$);
   const isLoading = useLiveData(unusedBlobsEntity.isLoading$);
   const [pageNum, setPageNum] = useState(0);
-  const [skip, setSkip] = useState(0);
   const [selectionAnchor, setSelectionAnchor] =
     useState<ListedBlobRecord | null>(null);
 
   const [unusedBlobs, setUnusedBlobs] = useState<ListedBlobRecord[]>([]);
+  const lastPage = Math.max(0, Math.ceil(unusedBlobs.length / PAGE_SIZE) - 1);
+  const currentPage = Math.min(pageNum, lastPage);
+  const skip = currentPage * PAGE_SIZE;
   const unusedBlobsPage = useMemo(() => {
     return unusedBlobs.slice(skip, skip + PAGE_SIZE);
   }, [unusedBlobs, skip]);
+
+  useEffect(() => {
+    setPageNum(currentPage);
+  }, [currentPage]);
 
   useEffect(() => {
     setUnusedBlobs(originalUnusedBlobs);
@@ -225,13 +233,18 @@ export const BlobManagementPanel = () => {
           ](),
         onConfirm: async () => {
           setDeleting(true);
-          track.$.settingsPanel.workspace.deleteUnusedBlob();
-          for (const blob of currentSelectedBlobs) {
-            await unusedBlobsEntity.deleteBlob(blob.key, true);
-            handleUnselectBlob(blob);
-            setUnusedBlobs(prev => prev.filter(b => b.key !== blob.key));
+          try {
+            track.$.settingsPanel.workspace.deleteUnusedBlob();
+            for (const blob of currentSelectedBlobs) {
+              await unusedBlobsEntity.deleteBlob(blob.key, true);
+              handleUnselectBlob(blob);
+              setUnusedBlobs(prev => prev.filter(b => b.key !== blob.key));
+            }
+          } catch (error) {
+            notify.error({ error: UserFriendlyError.fromAny(error) });
+          } finally {
+            setDeleting(false);
           }
-          setDeleting(false);
         },
         confirmText: t['Delete'](),
         cancelText: t['Cancel'](),
@@ -315,12 +328,11 @@ export const BlobManagementPanel = () => {
               </div>
               {unusedBlobs.length > PAGE_SIZE && (
                 <Pagination
-                  pageNum={pageNum}
+                  pageNum={currentPage}
                   totalCount={unusedBlobs.length}
                   countPerPage={PAGE_SIZE}
                   onPageChange={(_, pageNum) => {
                     setPageNum(pageNum);
-                    setSkip(pageNum * PAGE_SIZE);
                   }}
                 />
               )}
