@@ -174,9 +174,14 @@ impl StorageRuntime {
   }
 
   #[napi]
-  pub async fn get_object(&self, scope: String, key: String) -> napi::Result<Option<RuntimeObjectGetResult>> {
+  pub async fn get_object(&self, scope: String, key: String, max_bytes: Option<u32>) -> napi::Result<Option<RuntimeObjectGetResult>> {
     let locator = ObjectLocator::new(StorageScope::parse(&scope)?, ObjectKey::new(key)?);
-    let object = self.object_storage()?.get(&locator).await.map_err(to_napi_error)?;
+    let storage = self.object_storage()?;
+    let object = match max_bytes {
+      Some(limit) => storage.get_limited(&locator, limit as usize).await,
+      None => storage.get(&locator).await,
+    }
+    .map_err(to_napi_error)?;
     Ok(object.map(Into::into))
   }
 

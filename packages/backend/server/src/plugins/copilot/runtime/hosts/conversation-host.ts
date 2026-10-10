@@ -26,6 +26,12 @@ import {
   TurnScopeSnapshotSchema,
 } from '../contracts/shared';
 import { AttachmentAdmissionHost } from './attachment-admission';
+import {
+  claudeFileProfile,
+  FILE_BYTE_LIMIT,
+  FILE_COUNT_LIMIT,
+  FILE_TOTAL_BYTE_LIMIT,
+} from '../selected-file-context';
 
 export type PreparedConversationTurn = {
   messageId?: string;
@@ -93,6 +99,13 @@ export class ConversationHost {
         userId: session.config.userId,
         workspaceId: session.config.workspaceId,
         sessionId: session.config.sessionId,
+        ...(claudeFileProfile(session.config.workspaceId)
+          ? {
+              maxBytes: FILE_BYTE_LIMIT,
+              maxAttachments: FILE_COUNT_LIMIT,
+              maxTotalBytes: FILE_TOTAL_BYTE_LIMIT,
+            }
+          : {}),
       }
     );
     const artifacts = await Promise.all(

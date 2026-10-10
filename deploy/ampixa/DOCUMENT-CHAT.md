@@ -7,8 +7,10 @@ working embedding route. An Anthropic chat key does not supply that route:
 
 This change allows small selected Pages to be sent as text context to the
 installation's existing chat provider when embeddings are unavailable. It adds
-no model process, API credential, database migration, or new service. Ordinary
-provider token charges still apply to the document text included in each request.
+no model process, API credential, database migration, or new service for Pages.
+An optional [Claude file-chat route](claude-files/README.md) extends this to
+explicitly selected PDF/DOCX/TXT/image files with upload reuse and prompt caching.
+Ordinary provider token charges still apply to the document text included in each request.
 
 ## Behavior and limits
 
@@ -38,7 +40,8 @@ provider token charges still apply to the document text included in each request
   every turn. Normal answers and their existing persistence rules are unchanged.
 - Healthy embedding retrieval is unchanged. Processing, failed-indexing, and
   selection-limit errors are not converted into fallback responses. Mixed
-  document/artifact selections and image generation keep their previous behavior.
+  document/artifact selections keep their previous behavior unless the separate
+  Claude file-chat route is enabled. Image generation remains unchanged.
 
 This does **not** enable vector search across the workspace or populate an
 embedding index. Existing keyword search can operate separately when provisioned;
@@ -55,7 +58,7 @@ Run the focused backend test in a prepared checkout:
 yarn workspace @affine/server test src/__tests__/copilot/selected-document-context.spec.ts
 ```
 
-The local development check used Node 22 with an isolated AVA harness: actual
+The local development check used Node 24 with an isolated AVA harness: actual
 fallback, orchestrator, chat-query schema and tool-option code, with database,
 permission, reader, runtime and infrastructure dependencies replaced by fixtures.
 It is a logic regression check, not a live PostgreSQL/native-runtime or Anthropic
@@ -81,7 +84,9 @@ Use synthetic, non-sensitive Pages for acceptance:
 6. Select five distinct Pages, and separately test a Page whose text exceeds the
    total context cap. Verify a selection-limit error and no provider request.
 7. Disable document reading or workspace AI/indexing and verify the fallback does
-   not bypass the setting. Mixed file selections must retain their existing error.
+   not bypass the setting. With the file-chat opt-in unset, mixed file selections
+   must retain their existing error; with it enabled, follow its separate
+   acceptance protocol.
 8. Observe latency and memory under modest concurrency, and verify error logs do
    not contain the injected Page content. The input cap does not guarantee that
    all deployments have enough memory for their other services.

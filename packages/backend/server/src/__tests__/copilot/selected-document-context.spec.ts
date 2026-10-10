@@ -19,6 +19,7 @@ import {
   SelectedDocumentContext,
   withSelectedDocumentContext,
 } from '../../plugins/copilot/runtime/selected-document-context';
+import type { SelectedFileContext } from '../../plugins/copilot/runtime/selected-file-context';
 import { TurnOrchestrator } from '../../plugins/copilot/runtime/turn-orchestrator';
 
 function fixture() {
@@ -259,7 +260,11 @@ function orchestratorFixture(error?: Error) {
   let preflights = 0;
   const runtimeMessages: PromptMessage[][] = [];
   const persisted: unknown[][] = [];
+  const routes: unknown[] = [];
   const runtime = {
+    assertRoute: async (...args: unknown[]) => {
+      routes.push(args);
+    },
     streamText: async function* (
       _conditions: unknown,
       messages: PromptMessage[]
@@ -304,7 +309,16 @@ function orchestratorFixture(error?: Error) {
     {} as ImageResultHost,
     persistence,
     embeddings,
-    f.service
+    f.service,
+    {
+      read: async () => ({
+        role: 'user',
+        content: 'Selected file',
+        attachments: [
+          { kind: 'bytes', data: 'YQ==', mimeType: 'application/pdf' },
+        ],
+      }),
+    } as unknown as SelectedFileContext
   );
   return {
     ...f,
@@ -312,6 +326,7 @@ function orchestratorFixture(error?: Error) {
     scope,
     messages,
     runtimeMessages,
+    routes,
     persisted,
     preflights: () => preflights,
   };
@@ -387,3 +402,57 @@ test('mixed artifact selections, disabled reading, and image generation do not u
   );
   t.deepEqual(f.calls, []);
 });
+
+test.serial(
+  'file opt-in uses the authorized file route for stream-object and keeps bytes out of diagnostics',
+  async t => {
+    const before = process.env.AFFINE_CLAUDE_FILE_PROFILES;
+    process.env.AFFINE_CLAUDE_FILE_PROFILES = '{"workspace":"file-profile"}';
+    try {
+      const f = orchestratorFixture(new CopilotSelectedSourcesUnavailable());
+      f.scope.requiredArtifactIds.push('file');
+      const result = await f.orchestrator.streamObject('user', 'session', {
+        messageId: 'message',
+      });
+      for await (const _ of result.stream) {
+        /* drain */
+      }
+      t.is((f.routes[0] as unknown[])[0], 'chat.default');
+      t.deepEqual((f.routes[0] as unknown[])[1], {
+        profileId: 'file-profile',
+        modelId: 'claude-haiku-5-5',
+      });
+      t.is(f.runtimeMessages[0][0].content, 'Selected file');
+      t.false(JSON.stringify(result.finalMessage).includes('Selected file'));
+      t.true(
+        f.runtimeMessages[0].some(m =>
+          m.content.includes('Synthetic document content')
+        )
+      );
+      await t.throwsAsync(
+        f.orchestrator.streamObject('user', 'session', {
+          profileId: 'another-profile',
+          modelId: 'other',
+          messageId: 'message',
+        })
+      );
+      await t.throwsAsync(
+        f.orchestrator.streamObject('user', 'session', {
+          reasoning: 'true',
+          messageId: 'message',
+        }),
+        { message: /Turn off/ }
+      );
+      await t.throwsAsync(
+        f.orchestrator.streamObject('user', 'session', {
+          webSearch: 'true',
+          messageId: 'message',
+        }),
+        { message: /Turn off/ }
+      );
+    } finally {
+      if (before === undefined) delete process.env.AFFINE_CLAUDE_FILE_PROFILES;
+      else process.env.AFFINE_CLAUDE_FILE_PROFILES = before;
+    }
+  }
+);
