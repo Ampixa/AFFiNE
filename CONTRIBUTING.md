@@ -23,6 +23,11 @@ If `origin` points to your personal fork, fetch the base from your remote for `A
 - Keep credentials, private keys, user data, recordings, and generated runtime bundles out of commits.
 - Request maintainer review before merging. Merging a PR does not deploy it to AWS; deployment is a separate action.
 
+## Self-hosted operations
+
+For document search provisioning, acceptance checks and rollback, see
+[the workspace search runbook](deploy/ampixa/SEARCH.md).
+
 ## Relationship to upstream
 
 `toeverything/AFFiNE` is the upstream project. Submit Ampixa deployment changes here. Propose general upstream changes to `toeverything/AFFiNE` according to that project's contribution process.

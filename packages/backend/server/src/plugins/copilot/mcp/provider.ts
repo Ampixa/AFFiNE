@@ -175,13 +175,29 @@ export class WorkspaceMcpProvider {
         additionalProperties: false,
       },
       execute: async ({ query, doc_ids, limit }, options) => {
-        const result = await this.retrieval.search(
-          { user: userId, workspace: workspaceId },
-          query,
-          doc_ids,
-          limit ?? 10,
-          options.signal
-        );
+        let result;
+        try {
+          result = await this.retrieval.search(
+            { user: userId, workspace: workspaceId },
+            query,
+            doc_ids,
+            limit ?? 10,
+            options.signal
+          );
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message === 'SEARCH_UNAVAILABLE'
+          ) {
+            return toolError(
+              'SEARCH_UNAVAILABLE: Workspace search has no available search backend. ' +
+                'Ask the server administrator to enable or restore the keyword indexer ' +
+                'or embedding service. This is not an empty search result. ' +
+                'Documents with known IDs can still be read with read_document.'
+            );
+          }
+          throw error;
+        }
         return toolText(
           JSON.stringify({
             retrieval_mode: result.retrievalMode,
