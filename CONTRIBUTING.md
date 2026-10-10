@@ -30,6 +30,9 @@ For document search provisioning, acceptance checks and rollback, see
 For small selected-document chat without an embedding provider, see
 [the document chat runbook](deploy/ampixa/DOCUMENT-CHAT.md).
 
+For creating and moving native Kanban cards through MCP, see
+[the Kanban tools guide](deploy/ampixa/MCP-KANBAN.md).
+
 ## Relationship to upstream
 
 `toeverything/AFFiNE` is the upstream project. Submit Ampixa deployment changes here. Propose general upstream changes to `toeverything/AFFiNE` according to that project's contribution process.

@@ -10,6 +10,7 @@ import { PgUserspaceDocStorageAdapter } from './adapters/userspace';
 import { PgWorkspaceDocStorageAdapter } from './adapters/workspace';
 import { DocEventsListener } from './event';
 import { DocStorageCronJob } from './job';
+import { KanbanService } from './kanban';
 import { DocStorageOptions } from './options';
 import { DatabaseDocReader, DocReader, DocReaderProvider } from './reader';
 import { DocWriter } from './writer';
@@ -25,11 +26,13 @@ import { DocWriter } from './writer';
     DatabaseDocReader,
     DocEventsListener,
     DocWriter,
+    KanbanService,
   ],
   exports: [
     DatabaseDocReader,
     DocReader,
     DocWriter,
+    KanbanService,
     PgWorkspaceDocStorageAdapter,
     PgUserspaceDocStorageAdapter,
   ],
@@ -40,6 +43,7 @@ export {
   DatabaseDocReader,
   DocReader,
   DocWriter,
+  KanbanService,
   PgUserspaceDocStorageAdapter,
   PgWorkspaceDocStorageAdapter,
 };
