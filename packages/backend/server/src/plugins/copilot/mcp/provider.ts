@@ -204,6 +204,7 @@ export class WorkspaceMcpProvider {
           JSON.stringify({
             retrieval_mode: result.retrievalMode,
             degraded_reason: result.degradedReason,
+            coverage: result.coverage,
             hits: result.hits.map(hit => ({
               doc_id: hit.docId,
               title: hit.title,

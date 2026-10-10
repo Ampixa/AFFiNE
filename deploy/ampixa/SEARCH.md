@@ -1,5 +1,10 @@
 # Workspace search on the native self-hosted deployment
 
+For a small installation without room for a search companion, see the opt-in
+[bounded local keyword fallback](LIGHTWEIGHT-SEARCH.md). It trades full indexed
+coverage for explicit per-request limits and needs no additional service.
+The instructions below provision a persistent index for larger workspaces.
+
 `doc_search` needs a working keyword indexer or embedding backend. An Intelligence
 chat model alone does not provide either one. The native EC2 bootstrap configures
 PostgreSQL, Redis and AFFiNE, but does not provision a search service; the indexer

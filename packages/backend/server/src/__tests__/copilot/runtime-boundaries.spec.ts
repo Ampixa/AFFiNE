@@ -39,6 +39,7 @@ import type { ResolvedPrompt } from '../../plugins/copilot/prompt/spec';
 import { TextStreamParser } from '../../plugins/copilot/providers/utils';
 import { ArtifactRetrievalService } from '../../plugins/copilot/retrieval/artifact';
 import { DocumentRetrievalService } from '../../plugins/copilot/retrieval/document';
+import type { LocalDocumentSearch } from '../../plugins/copilot/retrieval/local-document';
 import {
   projectActionEventToChatEvent,
   projectActionResultToAssistantTurn,
@@ -421,7 +422,8 @@ test('document tools enforce the user-selected hard scope', async t => {
     readableAc,
     lexicalIndexer,
     vectorSearch,
-    documentModels
+    documentModels,
+    {} as LocalDocumentSearch
   );
   const hybridResult = await hybrid.search(options, 'query', undefined, 10);
   t.is(hybridResult.retrievalMode, 'hybrid');
@@ -436,7 +438,8 @@ test('document tools enforce the user-selected hard scope', async t => {
     readableAc,
     lexicalIndexer,
     { ...vectorSearch, canEmbedding: false },
-    documentModels
+    documentModels,
+    {} as LocalDocumentSearch
   );
   const lexicalResult = await lexicalOnly.search(
     options,
@@ -452,7 +455,8 @@ test('document tools enforce the user-selected hard scope', async t => {
     readableAc,
     lexicalIndexer,
     vectorSearch,
-    documentModels
+    documentModels,
+    {} as LocalDocumentSearch
   );
   const vectorResult = await vectorOnly.search(options, 'query', undefined, 10);
   t.is(vectorResult.retrievalMode, 'vector');

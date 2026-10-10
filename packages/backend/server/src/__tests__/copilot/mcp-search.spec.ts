@@ -6,6 +6,7 @@ import type { PermissionAccess } from '../../core/permission';
 import type { Models } from '../../models';
 import { WorkspaceMcpProvider } from '../../plugins/copilot/mcp/provider';
 import { DocumentRetrievalService } from '../../plugins/copilot/retrieval/document';
+import type { LocalDocumentSearch } from '../../plugins/copilot/retrieval/local-document';
 import type { IndexerService } from '../../plugins/indexer/service';
 
 function fixture(
@@ -60,7 +61,8 @@ function fixture(
       matchWorkspaceDocCandidates: async () => [],
       rerankWorkspaceDocs: async () => [],
     },
-    { doc: { findMetas: async () => [] } } as unknown as Models
+    { doc: { findMetas: async () => [] } } as unknown as Models,
+    {} as LocalDocumentSearch
   );
   const provider = new WorkspaceMcpProvider(
     ac,
@@ -132,7 +134,7 @@ test('invalid search arguments and pre-aborted requests do not hit the backend',
   for (const args of [
     { query: '  ' },
     { query: 'test', limit: 21 },
-    { query: 'test', doc_ids: Array(51).fill('doc') },
+    { query: 'test', doc_ids: Array.from({ length: 51 }, () => 'doc') },
   ]) {
     t.true(
       (await tool.execute(args, { signal: new AbortController().signal }))

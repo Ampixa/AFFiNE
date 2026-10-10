@@ -1,4 +1,5 @@
 import './config';
+import './selfhosted-config';
 
 import { Module } from '@nestjs/common';
 

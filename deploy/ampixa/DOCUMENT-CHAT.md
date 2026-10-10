@@ -45,7 +45,8 @@ Ordinary provider token charges still apply to the document text included in eac
 
 This does **not** enable vector search across the workspace or populate an
 embedding index. Existing keyword search can operate separately when provisioned;
-see [SEARCH.md](SEARCH.md). An embedding status of `embedding_route_unavailable`
+see [SEARCH.md](SEARCH.md) or the small-server
+[bounded keyword fallback](LIGHTWEIGHT-SEARCH.md). An embedding status of `embedding_route_unavailable`
 may remain even while bounded selected-Page chat works.
 
 ## Build and verification

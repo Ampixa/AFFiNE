@@ -58,6 +58,7 @@ export const buildDocumentSearch = (
         scope_doc_count: documentScope?.allowedDocIds.length,
         retrieval_mode: result.retrievalMode,
         degraded_reason: result.degradedReason,
+        coverage: result.coverage,
         hits: result.hits.map(hit => ({
           doc_id: hit.docId,
           title: hit.title,
