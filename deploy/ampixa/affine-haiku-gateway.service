@@ -1,0 +1,24 @@
+[Unit]
+Description=AFFiNE Claude Haiku gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=affine
+Group=affine
+WorkingDirectory=/opt/affine/ai-gateway
+EnvironmentFile=/etc/affine/ai-gateway.env
+Environment=LITELLM_TELEMETRY=False
+Environment=HOME=/var/lib/affine
+ExecStart=/opt/affine/ai-gateway/venv/bin/litellm --config /opt/affine/ai-gateway/haiku-gateway.yaml --host 127.0.0.1 --port 3011 --num_workers 1
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/affine/ai-gateway /var/lib/affine
+
+[Install]
+WantedBy=multi-user.target

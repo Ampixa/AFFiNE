@@ -1,0 +1,11 @@
+{
+  "copilot": {
+    "enabled": true,
+    "byok": {
+      "enabled": true,
+      "allowedProviders": ["openai"],
+      "allowCustomEndpoint": true,
+      "allowPrivateEndpoint": true
+    }
+  }
+}
