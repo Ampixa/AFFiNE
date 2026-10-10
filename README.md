@@ -1,3 +1,5 @@
+> **Ampixa fork:** Open pull requests in [Ampixa/AFFiNE](https://github.com/Ampixa/AFFiNE/compare/ampixa%2Fselfhosted...ampixa%2Fselfhosted?expand=1) with **`ampixa/selfhosted` as the base branch**. See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.
+
 <div align="center">
 
 <h1 style="border-bottom: none">
