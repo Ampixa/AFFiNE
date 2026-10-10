@@ -24,6 +24,7 @@ import {
   DOCUMENT_VECTOR_SEARCH,
   DocumentRetrievalService,
 } from './retrieval/document';
+import { LocalDocumentSearch } from './retrieval/local-document';
 import { ActionRuntimeBridge } from './runtime/action-runtime-bridge';
 import { CapabilityRuntime } from './runtime/capability-runtime';
 import { CopilotRuntimeEventConsumer } from './runtime/copilot-runtime-event-consumer';
@@ -73,6 +74,7 @@ export const COPILOT_RUNTIME_PROVIDERS = [
   { provide: DOCUMENT_VECTOR_SEARCH, useExisting: NativeEmbeddingService },
   DocumentRetrievalService,
   ArtifactRetrievalService,
+  LocalDocumentSearch,
   DelegatedEditorService,
   ActionRuntimeBridge,
   CopilotRuntimeEventConsumer,

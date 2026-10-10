@@ -7,6 +7,7 @@ import { type DocChunkSimilarity, Models } from '../../../models';
 import { IndexerService } from '../../indexer/service';
 import type { SearchDoc } from '../../indexer/types';
 import type { EmbeddingRouteContext } from '../embedding/route-context';
+import { LocalDocumentSearch } from './local-document';
 
 type DocumentSearchContext =
   | {
@@ -75,7 +76,8 @@ export class DocumentRetrievalService {
     private readonly indexer: IndexerService,
     @Inject(DOCUMENT_VECTOR_SEARCH)
     private readonly context: DocumentVectorSearch,
-    private readonly models: Models
+    private readonly models: Models,
+    private readonly localSearch: LocalDocumentSearch
   ) {}
 
   async search(
@@ -202,6 +204,16 @@ export class DocumentRetrievalService {
       );
     });
     if (lexicalResult === null && vector === null) {
+      if (this.config.copilotSelfHosted?.documentSearchFallback) {
+        return this.localSearch.search(
+          userId,
+          workspaceId,
+          query,
+          docIds,
+          limit,
+          signal
+        );
+      }
       throw new Error('SEARCH_UNAVAILABLE');
     }
 
@@ -223,6 +235,7 @@ export class DocumentRetrievalService {
     const retrievalMode =
       hasLexical && vector ? 'hybrid' : hasLexical ? 'lexical' : 'vector';
     return {
+      coverage: undefined,
       retrievalMode,
       degradedReason:
         retrievalMode === 'hybrid'

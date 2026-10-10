@@ -4,7 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 
 import { Config } from '../../../base/config';
-import { CopilotPromptInvalid } from '../../../base/error/errors.gen';
+import {
+  CopilotPromptInvalid,
+  CopilotUnsupportedChatOptions,
+} from '../../../base/error/errors.gen';
 import { BackendRuntimeProvider } from '../../../core/backend-runtime';
 import {
   buildLlmEmbeddingRequest,
@@ -180,6 +183,12 @@ export class CapabilityRuntime {
     messages: PromptMessage[],
     options: RuntimeOptions
   ) {
+    if (options.reasoning && this.config.copilotSelfHosted?.disableReasoning) {
+      // Cover Auto, explicit profiles, streaming and structured chat equally.
+      // Never silently discard a requested feature or let an incompatible
+      // gateway forward OpenAI's `include` field to Anthropic.
+      throw new CopilotUnsupportedChatOptions();
+    }
     const toolSet = await this.tools.getTools(options, '');
     const { request } = await buildCanonicalNativeRequest({
       model: 'route-selected',

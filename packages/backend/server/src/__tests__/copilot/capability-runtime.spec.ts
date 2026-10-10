@@ -23,7 +23,11 @@ async function collect<T>(source: AsyncIterable<T>) {
   return values;
 }
 
-function runtimeFixture(streamError?: string | Error, enabled = true) {
+function runtimeFixture(
+  streamError?: string | Error,
+  enabled = true,
+  disableReasoning = false
+) {
   const calls: Array<{
     slot: string;
     request?: unknown;
@@ -89,7 +93,10 @@ function runtimeFixture(streamError?: string | Error, enabled = true) {
   const consumer = {
     consume: async () => {},
   } as unknown as CopilotRuntimeEventConsumer;
-  const config = { copilot: { enabled } } as Config;
+  const config = {
+    copilot: { enabled },
+    copilotSelfHosted: { disableReasoning },
+  } as Config;
   return {
     calls,
     runtime: new CapabilityRuntime(
@@ -421,3 +428,26 @@ test('tool callback passes transformed args without prototype pollution', async 
   t.deepEqual(received, [{ value: 'AFFiNE' }]);
   t.is((Object.prototype as Record<string, unknown>).polluted, undefined);
 });
+
+for (const method of ['text', 'streamText', 'streamObject'] as const) {
+  test(`disabled reasoning rejects ${method} before provider execution; ordinary chat works`, async t => {
+    const { runtime, calls } = runtimeFixture(undefined, true, true);
+    const messages = [{ role: 'user' as const, content: 'hello' }];
+    const rejected =
+      method === 'text'
+        ? runtime.text({}, messages, { reasoning: true })
+        : collect<unknown>(runtime[method]({}, messages, { reasoning: true }));
+    await t.throwsAsync(rejected, {
+      instanceOf: CopilotUnsupportedChatOptions,
+    });
+    t.deepEqual(calls, []);
+    if (method === 'text')
+      await runtime.text({}, messages, { reasoning: false });
+    else
+      await collect<unknown>(
+        runtime[method]({}, messages, { reasoning: false })
+      );
+    t.is(calls.length, 1);
+    t.falsy((calls[0].request as any).include?.length);
+  });
+}

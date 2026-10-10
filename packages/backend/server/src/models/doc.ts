@@ -234,6 +234,44 @@ export class DocModel extends BaseModel {
     })) as Prisma.SnapshotGetPayload<{ select: Select }> | null;
   }
 
+  /** Read a bounded, consistent snapshot + pending updates for local search.
+   * PostgreSQL checks the actual byte lengths before returning any binary data.
+   * A limit failure is distinct from a missing document; never parse a prefix.
+   */
+  async getBoundedSearchUpdates(workspaceId: string, docId: string) {
+    const rows = await this.db.$queryRaw<
+      { blob: Buffer | null; timestamp: Date; bytes: bigint }[]
+    >`
+      WITH parts AS MATERIALIZED (
+        SELECT blob, updated_at AS timestamp FROM snapshots
+        WHERE workspace_id = ${workspaceId} AND guid = ${docId}
+        UNION ALL
+        (SELECT blob, created_at AS timestamp FROM updates
+         WHERE workspace_id = ${workspaceId} AND guid = ${docId}
+         ORDER BY created_at LIMIT 129)
+      ), budget AS (
+        SELECT COALESCE(SUM(octet_length(blob)), 0)::bigint AS bytes,
+               COUNT(*) AS parts FROM parts
+      )
+      SELECT CASE WHEN budget.bytes <= 1048576 AND budget.parts <= 128
+                  THEN parts.blob ELSE NULL END AS blob,
+             parts.timestamp, budget.bytes
+      FROM parts CROSS JOIN budget ORDER BY parts.timestamp
+    `;
+    const last = rows.at(-1);
+    if (!last) return null;
+    const updates = rows.flatMap(row => (row.blob === null ? [] : [row.blob]));
+    if (updates.length !== rows.length) {
+      return { limited: true as const };
+    }
+    return {
+      limited: false as const,
+      updates,
+      timestamp: last.timestamp,
+      bytes: Number(last.bytes),
+    };
+  }
+
   async getAuthors(workspaceId: string, docId: string) {
     return await this.db.snapshot.findUnique({
       where: {
