@@ -177,3 +177,105 @@ complete frontend/backend/native/dependency set and compatible configuration.
 If migrations changed data incompatibly, code rollback alone is insufficient:
 use the tested database/storage restore plan and account for subsequent writes.
 Do not delete uploaded files, reset credentials, or prune Docker volumes.
+
+## Routine upgrades after a merge
+
+The repeatable path is **merge → pin the merge SHA → build and test off-host →
+verify the archive → preflight → deploy → browser acceptance**. A green merge is
+not a deployment. Keep `/opt/affine/source` for source inspection; the service
+executes the separately built `/opt/affine/app` tree.
+
+For this existing systemd host, include `deploy-release.sh` and
+`rollback-release.sh` in each prepared release. These helpers support upgrades
+with unchanged compatibility versions and already-applied migrations. They stop
+on a migration difference; use a separately reviewed migration plan in that case.
+They never run a build, migration, or provider provisioning command.
+
+The builder must provide the following alongside `app/`:
+
+- `SOURCE_COMMIT`: the full reviewed application SHA.
+- `APP_VERSION`: the installed compatibility version.
+- `RELEASE.json`: `source_commit`, `app_version`, `node` (including the `v` prefix),
+  and `target` (`linux-x86_64-glibc`), plus build/test provenance.
+- `DATA_MIGRATION_NAMES.json`: exported data migration names from that source SHA.
+- `verify-native.cjs`: the tested, synthetic bounded-storage native probe from
+  `deploy/ampixa/verify-native.cjs`.
+- `VALIDATION.txt` and `BUILD_VALIDATED`: actual completed gates and limitations.
+- `FILES.sha256`: checksums for every release file except the checksum file itself.
+- An archive checksum generated **after** packaging the complete validated release.
+
+The current archive may call the helper `deploy.sh` and the rollback helper
+`rollback.sh`. They are copies of the source-controlled helpers; include their
+source revision in the release metadata when it differs from the application SHA.
+No production environment files or API keys belong in these artifacts.
+
+After transferring the archive and checksum, run on the VM, replacing the two
+values with the release's actual full SHA and archive filename:
+
+```bash
+set -euo pipefail
+AFFINE_SHA='<full reviewed application SHA>'
+AFFINE_ARCHIVE='affine-<first 12 SHA characters>-linux-x64.tar.gz'
+cd /tmp
+sha256sum -c "$AFFINE_ARCHIVE.sha256"
+AFFINE_RELEASE="/opt/affine/releases/${AFFINE_SHA:0:12}"
+# Refuse to extract over an existing release. Inspect it rather than overwriting.
+sudo test ! -e "$AFFINE_RELEASE"
+sudo install -d -m 755 "$AFFINE_RELEASE"
+sudo tar -xzf "$AFFINE_ARCHIVE" -C "$AFFINE_RELEASE"
+sudo bash "$AFFINE_RELEASE/deploy.sh" "$AFFINE_RELEASE" "$AFFINE_SHA" --check
+sudo bash "$AFFINE_RELEASE/deploy.sh" "$AFFINE_RELEASE" "$AFFINE_SHA"
+cat /opt/affine/app/SOURCE_COMMIT
+sudo systemctl is-active affine
+curl -fsS https://affine.ampixa.com/info
+```
+
+Preflight verifies the artifact, runtime, native module, installed migrations,
+service layout and disk allowance. It does not certify production performance.
+Deployment prepares a separate app copy, stops only AFFiNE, takes a coordinated
+PostgreSQL/config/local-storage backup, preserves the old app, switches the bundle
+and checks health. A failed switch attempts to restore the previous app. The
+archive's app remains intact, and the backup path is recorded in
+`/opt/affine/LAST_RELEASE_BACKUP`. This local backup is not offsite recovery.
+
+The upgrade preserves `/etc/affine`, `/var/lib/affine/.affine`, service drop-ins,
+Nginx, PostgreSQL, Redis and both existing AI gateways. If Claude file chat is
+already enabled, **do not rerun `enable-file-chat.sh` or profile provisioning**.
+For an update to a gateway itself, use a separate reviewed rollout; these helpers
+only replace the application. Confirm externally stored uploads have their own
+backup policy; this helper backs up the known local storage layout only.
+
+After deployment, reload the browser and check sign-in, an existing Page and file
+download, ordinary Auto chat and the changed feature. For the unsupported-options
+fix, enable Extended Thinking on the Claude file-chat route and confirm the
+specific instruction replaces the generic server error. Then disable it and send
+a new message against the selected Page; do not replay the old failing request.
+
+If application acceptance fails and no subsequent schema/configuration changes
+have been made, perform a code-only rollback:
+
+```bash
+sudo bash "$AFFINE_RELEASE/rollback.sh" "$AFFINE_SHA"
+curl -fsS https://affine.ampixa.com/info
+```
+
+This restores the previous complete app and leaves current data and keys intact.
+It refuses a mismatched current SHA or backup. It does not restore the database
+or gateway configuration. Review those separately if they changed after rollout.
+
+### Release-helper tests
+
+The failure-injection harness uses real filesystem copies/backups with synthetic
+state and stubbed service/database/HTTP commands. It checks preflight, migration
+and checksum rejection, backup failure, failed startup recovery, successful
+switching, and rollback. It must run in a **disposable root container** with no
+existing `/opt/affine` or AFFiNE configuration; it refuses other environments.
+This is additional coverage, not a substitute for the packaged-app staging gates.
+
+```bash
+docker run --rm --platform linux/amd64 \
+  -e AFFINE_DEPLOY_TEST_SANDBOX=1 \
+  --mount "type=bind,src=$PWD,dst=/repo,readonly" \
+  node:22.23.2-bookworm-slim \
+  bash -c 'apt-get update -qq && apt-get install -y --no-install-recommends python3 && node /repo/deploy/ampixa/deploy-release.test.mjs'
+```
