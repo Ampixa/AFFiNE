@@ -114,7 +114,7 @@ export declare class StorageRuntime {
   providerCapabilities(scope: string): Promise<StorageProviderCapabilities>
   putObject(scope: string, key: string, body: Buffer, metadata?: RuntimeObjectStoragePutOptions | undefined | null): Promise<RuntimeObjectMetadata>
   headObject(scope: string, key: string): Promise<RuntimeObjectMetadata | null>
-  getObject(scope: string, key: string): Promise<RuntimeObjectGetResult | null>
+  getObject(scope: string, key: string, maxBytes?: number | undefined | null): Promise<RuntimeObjectGetResult | null>
   listObjects(scope: string, prefix?: string | undefined | null): Promise<Array<RuntimeObjectListEntry>>
   deleteObject(scope: string, key: string): Promise<void>
   presignPut(scope: string, key: string, metadata?: RuntimeObjectStoragePutOptions | undefined | null): Promise<RuntimePresignedObjectRequest | null>

@@ -111,10 +111,11 @@ export class StorageRuntimeProvider
 
   async getObject(
     scope: string,
-    key: string
+    key: string,
+    maxBytes?: number
   ): Promise<StorageRuntimeGetObjectResult> {
     const result = await this.measured('getObject', rt =>
-      rt.getObject(scope, key)
+      rt.getObject(scope, key, maxBytes)
     );
     return result ? fromRuntimeGetResult(result) : {};
   }

@@ -1,0 +1,25 @@
+[Unit]
+Description=AFFiNE Claude selected-file gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=affine
+Group=affine
+WorkingDirectory=/opt/affine/ai-gateway/claude-files
+EnvironmentFile=/etc/affine/ai-gateway.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node --max-old-space-size=128 /opt/affine/ai-gateway/claude-files/gateway.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryHigh=160M
+MemoryMax=224M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

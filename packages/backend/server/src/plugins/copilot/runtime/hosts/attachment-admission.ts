@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { Injectable } from '@nestjs/common';
 
-import { OneMB } from '../../../../base';
+import { CopilotPromptInvalid, OneMB } from '../../../../base';
 import type {
   PromptAttachment,
   PromptAttachmentSourceKind,
@@ -32,6 +32,8 @@ export type AttachmentAdmissionContext = {
   sessionId?: string;
   signal?: AbortSignal;
   maxBytes?: number;
+  maxAttachments?: number;
+  maxTotalBytes?: number;
   trustedHostSuffixes?: string[];
   assertCanUseAttachment?: (source: {
     kind: PromptAttachmentSourceKind | 'alias' | 'raw_url';
@@ -62,13 +64,21 @@ function toBase64Buffer(data: string, encoding: 'base64' | 'utf8' = 'base64') {
     : Buffer.from(data, 'base64');
 }
 
-function parseDataUrl(url: string) {
+function parseDataUrl(url: string, maxBytes: number) {
   const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(url);
   if (!match) return;
 
   const mimeType = normalizeMimeType(match[1]);
   const isBase64 = !!match[2];
   const rawData = match[3] ?? '';
+  // Percent encoding can use three characters per byte; check before decoding.
+  if (
+    rawData.length > (isBase64 ? 4 * Math.ceil(maxBytes / 3) : 3 * maxBytes)
+  ) {
+    throw new CopilotPromptInvalid(
+      'Attachment exceeds the file-chat size limit'
+    );
+  }
   const data = isBase64
     ? rawData
     : Buffer.from(decodeURIComponent(rawData), 'utf8').toString('base64');
@@ -137,8 +147,23 @@ function admittedBytesSource(input: {
   mimeType: string;
   fileName?: string;
   providerHint?: AttachmentProviderHint;
+  maxBytes: number;
 }): AdmittedAttachmentSource {
+  // Reject before decoding an oversized base64 or UTF-8 string.
+  const encodedLimit =
+    input.encoding === 'utf8'
+      ? input.maxBytes
+      : 4 * Math.ceil(input.maxBytes / 3);
+  if (Buffer.byteLength(input.data, 'utf8') > encodedLimit) {
+    throw new CopilotPromptInvalid(
+      'Attachment exceeds the file-chat size limit'
+    );
+  }
   const buffer = toBase64Buffer(input.data, input.encoding);
+  if (buffer.length > input.maxBytes)
+    throw new CopilotPromptInvalid(
+      'Attachment exceeds the file-chat size limit'
+    );
   const hash = hashBuffer(buffer);
 
   return {
@@ -179,6 +204,7 @@ export class AttachmentAdmissionHost {
         throw new Error('Attachment data and MIME type are required');
       }
       return admittedBytesSource({
+        maxBytes: context.maxBytes ?? DEFAULT_MAX_BYTES,
         data,
         encoding: parsed.encoding,
         mimeType,
@@ -191,9 +217,13 @@ export class AttachmentAdmissionHost {
       throw new Error('Attachment URL is required for admission');
     }
 
-    const dataUrl = parseDataUrl(parsed.url);
+    const dataUrl = parseDataUrl(
+      parsed.url,
+      context.maxBytes ?? DEFAULT_MAX_BYTES
+    );
     if (dataUrl) {
       return admittedBytesSource({
+        maxBytes: context.maxBytes ?? DEFAULT_MAX_BYTES,
         data: dataUrl.data,
         mimeType: parsed.mimeType
           ? normalizeMimeType(parsed.mimeType)
@@ -217,6 +247,7 @@ export class AttachmentAdmissionHost {
     );
 
     return admittedBytesSource({
+      maxBytes: context.maxBytes ?? DEFAULT_MAX_BYTES,
       data: downloaded.data,
       mimeType: declaredMimeType
         ? normalizeMimeType(declaredMimeType)
@@ -230,11 +261,22 @@ export class AttachmentAdmissionHost {
     attachments: PromptAttachment[],
     context: AttachmentAdmissionContext
   ) {
-    return Promise.all(
-      attachments.map(attachment =>
-        this.admitPromptAttachment(attachment, context)
-      )
-    );
+    if (attachments.length > (context.maxAttachments ?? 64)) {
+      throw new CopilotPromptInvalid('Too many attachments');
+    }
+    const admitted: AdmittedAttachmentSource[] = [];
+    let total = 0;
+    for (const attachment of attachments) {
+      const source = await this.admitPromptAttachment(attachment, context);
+      total += source.size;
+      if (total > (context.maxTotalBytes ?? DEFAULT_MAX_BYTES)) {
+        throw new CopilotPromptInvalid(
+          'Attachments exceed the combined size limit'
+        );
+      }
+      admitted.push(source);
+    }
+    return admitted;
   }
 }
 

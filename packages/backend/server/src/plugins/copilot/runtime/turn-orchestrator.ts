@@ -1,10 +1,15 @@
 import { Injectable } from '@nestjs/common';
 
+import {
+  CopilotPromptInvalid,
+  CopilotSelectedSourcesUnavailable,
+} from '../../../base';
 import { BackendRuntimeEmbeddingJob } from '../../../core/backend-runtime';
 import { type Turn } from '../core';
 import {
   type ModelConditions,
   ModelInputType,
+  type PromptMessage,
   type PromptParams,
   type StreamObject,
 } from '../providers/types';
@@ -15,6 +20,15 @@ import { CapabilityRuntime } from './capability-runtime';
 import { ConversationHost } from './hosts/conversation-host';
 import { ImageResultHost } from './hosts/image-result-host';
 import { TurnPersistence } from './hosts/turn-persistence';
+import {
+  SelectedDocumentContext,
+  withSelectedDocumentContext,
+} from './selected-document-context';
+import {
+  claudeFileProfile,
+  SelectedFileContext,
+  withSelectedFileContext,
+} from './selected-file-context';
 
 @Injectable()
 export class TurnOrchestrator {
@@ -23,7 +37,9 @@ export class TurnOrchestrator {
     private readonly runtime: CapabilityRuntime,
     private readonly imageResults: ImageResultHost,
     private readonly turnPersistence: TurnPersistence,
-    private readonly embeddings: BackendRuntimeEmbeddingJob
+    private readonly embeddings: BackendRuntimeEmbeddingJob,
+    private readonly selectedDocuments: SelectedDocumentContext,
+    private readonly selectedFiles: SelectedFileContext
   ) {}
 
   private buildPromptParams(latestTurn?: Turn): Record<string, unknown> {
@@ -36,6 +52,7 @@ export class TurnOrchestrator {
     query: Record<string, string | string[]>,
     selection: {
       responseMode: 'text' | 'object' | 'image';
+      signal?: AbortSignal;
     }
   ) {
     const prepared = await this.conversations.prepareTurn(
@@ -44,8 +61,8 @@ export class TurnOrchestrator {
       query
     );
     const {
-      profileId,
-      modelId,
+      profileId: requestedProfileId,
+      modelId: requestedModelId,
       routeTargetId,
       reasoning,
       webSearch,
@@ -54,19 +71,91 @@ export class TurnOrchestrator {
     } = ChatQuerySchema.parse(query);
     const promptParams = this.buildPromptParams(prepared.latestTurn);
     const scope = prepared.latestTurn?.scopeSnapshot?.retrieval;
-    if (scope?.mode === 'required' && scope.requiredDocIds.length) {
-      await this.embeddings.prepareSelectedDocuments(
-        prepared.session.config.workspaceId,
-        scope.requiredDocIds
-      );
+    let profileId = requestedProfileId;
+    let modelId = requestedModelId;
+    const fileProfile = claudeFileProfile(prepared.session.config.workspaceId);
+    const directFiles =
+      !!fileProfile &&
+      selection.responseMode !== 'image' &&
+      scope?.mode === 'required' &&
+      scope.requiredArtifactIds.length > 0;
+    if (directFiles) {
+      if (reasoning || webSearch) {
+        throw new CopilotPromptInvalid(
+          'Turn off reasoning and web search when using Claude file chat.'
+        );
+      }
+      if (
+        toolsConfig.readingDocs === false ||
+        (profileId && profileId !== fileProfile)
+      ) {
+        throw new CopilotPromptInvalid(
+          'Enable document reading and select Auto or the configured Claude file-chat profile.'
+        );
+      }
+      profileId = fileProfile;
+      modelId = process.env.AFFINE_CLAUDE_FILE_MODEL || 'claude-haiku-5-5';
     }
-    const finalMessage = prepared.session.finish({
+    let selectedContext: PromptMessage | undefined;
+    if (scope?.mode === 'required' && scope.requiredDocIds.length) {
+      try {
+        await this.embeddings.prepareSelectedDocuments(
+          prepared.session.config.workspaceId,
+          scope.requiredDocIds
+        );
+      } catch (error) {
+        // Both text and stream-object are chat transports. Image generation,
+        // unconfigured file scopes, and pending/failed indexing retain their errors.
+        if (
+          !(error instanceof CopilotSelectedSourcesUnavailable) ||
+          selection.responseMode === 'image' ||
+          toolsConfig.readingDocs === false ||
+          (scope.requiredArtifactIds.length && !directFiles)
+        ) {
+          throw error;
+        }
+        selectedContext = await this.selectedDocuments.read(
+          userId,
+          prepared.session.config.workspaceId,
+          scope.requiredDocIds,
+          selection.signal
+        );
+      }
+    }
+    const diagnosticMessages = prepared.session.finish({
       ...prepared.params,
       ...promptParams,
     });
+    let finalMessage = selectedContext
+      ? withSelectedDocumentContext(diagnosticMessages, selectedContext)
+      : diagnosticMessages;
+    if (directFiles) {
+      // Resolve the route before loading file bytes. This still goes through
+      // native BYOK entitlement, credential selection and usage accounting.
+      await this.runtime.assertRoute(
+        selection.responseMode === 'object' ? 'chat.default' : 'prompt.text',
+        { profileId, modelId },
+        {
+          workspace: prepared.session.config.workspaceId,
+          user: userId,
+          session: sessionId,
+          byokLeaseId,
+          quotaBackedRoutesAllowed: prepared.quotaBackedRoutesAllowed,
+        }
+      );
+      const fileContext = await this.selectedFiles.read(
+        userId,
+        prepared.session.config.workspaceId,
+        sessionId,
+        scope.requiredArtifactIds,
+        selection.signal
+      );
+      finalMessage = withSelectedFileContext(finalMessage, fileContext);
+    }
     return {
       prepared,
       finalMessage,
+      diagnosticMessages,
       selection: {
         model: profileId && modelId ? modelId : 'route-selected',
         conditions: { profileId, modelId },
@@ -79,7 +168,7 @@ export class TurnOrchestrator {
           byokLeaseId,
           billingUnitId: prepared.latestTurn?.id,
           builtInRouteId: prepared.session.config.promptName,
-          managedTargetId: routeTargetId,
+          managedTargetId: directFiles ? undefined : routeTargetId,
           quotaBackedRoutesAllowed: prepared.quotaBackedRoutesAllowed,
           retrievalScope: prepared.latestTurn?.scopeSnapshot?.retrieval,
           featureKind:
@@ -93,6 +182,10 @@ export class TurnOrchestrator {
           tools: getTools(
             prepared.session.config.promptConfig?.tools,
             toolsConfig
+          )?.filter(
+            tool =>
+              !directFiles ||
+              (tool !== 'artifactRead' && tool !== 'artifactSearch')
           ),
         },
       },
@@ -106,9 +199,10 @@ export class TurnOrchestrator {
     signal?: AbortSignal,
     wasAborted: () => boolean = () => false
   ) {
-    const { prepared, finalMessage, selection } =
+    const { prepared, finalMessage, diagnosticMessages, selection } =
       await this.prepareChatSelection(userId, sessionId, query, {
         responseMode: 'text',
+        signal,
       });
 
     const stream = this.streamTextResult(
@@ -125,7 +219,8 @@ export class TurnOrchestrator {
     return {
       messageId: prepared.messageId,
       model: selection.model,
-      finalMessage,
+      // The controller includes this in error diagnostics. Do not log sources.
+      finalMessage: diagnosticMessages,
       stream,
     };
   }
@@ -156,15 +251,16 @@ export class TurnOrchestrator {
     signal?: AbortSignal,
     wasAborted: () => boolean = () => false
   ) {
-    const { prepared, finalMessage, selection } =
+    const { prepared, finalMessage, diagnosticMessages, selection } =
       await this.prepareChatSelection(userId, sessionId, query, {
         responseMode: 'object',
+        signal,
       });
 
     return {
       messageId: prepared.messageId,
       model: selection.model,
-      finalMessage,
+      finalMessage: diagnosticMessages,
       stream: this.streamObjectResult(
         prepared.session,
         selection.conditions,
