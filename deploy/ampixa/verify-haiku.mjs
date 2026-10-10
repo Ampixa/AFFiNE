@@ -7,9 +7,14 @@ const {
   CopilotManagedTier,
 } = require('/opt/affine/app/dist/server-native.x64.node');
 const owners = JSON.parse(await readFile(process.argv[2], 'utf8'));
+if (!process.env.AFFINE_BACKEND_RUNTIME_CONFIG_PATH) {
+  throw new Error(
+    'Set AFFINE_BACKEND_RUNTIME_CONFIG_PATH in the production environment before verifying AI'
+  );
+}
 const runtime = new BackendRuntime(
   await readFile('/var/lib/affine/.affine/config/private.key', 'utf8'),
-  ['/var/lib/affine/.affine/config/config.json']
+  undefined
 );
 try {
   await runtime.start();
