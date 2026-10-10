@@ -123,14 +123,17 @@ performed by the local test commands.
    existing `/etc/affine/ai-gateway.env` with `ANTHROPIC_API_KEY`, optional
    `ANTHROPIC_WORKSPACE_ID`, and `LITELLM_MASTER_KEY`; do not expose that file or
    copy the Anthropic key into a workspace profile. Keep gateway credentials
-   distinct from the Anthropic key. Check `/usr/bin/node` is the intended version.
+   distinct from the Anthropic key. The unit uses `/opt/affine/node`, the same
+   Node 22 runtime as `affine.service`; Ubuntu's `/usr/bin/node` can be older.
+   Verify `/opt/affine/node --version` before installing the unit. For another
+   installation layout, change `ExecStart` to its verified Node 22 path.
 4. Start the gateway and inspect its service status. Do not expose port 3012 in
    the reverse proxy or firewall. The existing 3011 LiteLLM route is retained.
 5. As the `affine` user, with its normal production and gateway environment
    already loaded, provision the additional profile:
 
    ```sh
-   node /opt/affine/ai-gateway/claude-files/provision.mjs /secure/path/workspace-owner.json
+   /opt/affine/node /opt/affine/ai-gateway/claude-files/provision.mjs /secure/path/workspace-owner.json
    ```
 
    The JSON contains exactly one `{ "workspaceId": "...", "actorUserId": "..." }`

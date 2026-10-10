@@ -25,6 +25,10 @@ If `origin` points to your personal fork, fetch the base from your remote for `A
 
 ## Self-hosted operations
 
+For a combined frontend/backend/native release, use the
+[manual release runbook](deploy/ampixa/MANUAL-RELEASE.md). It includes a read-only
+host preflight, build requirements, acceptance gates and rollback steps.
+
 For document search provisioning, acceptance checks and rollback, see
 [the workspace search runbook](deploy/ampixa/SEARCH.md).
 For small selected-document chat without an embedding provider, see
