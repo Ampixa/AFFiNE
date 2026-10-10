@@ -9,7 +9,7 @@ Group=affine
 WorkingDirectory=/opt/affine/ai-gateway/claude-files
 EnvironmentFile=/etc/affine/ai-gateway.env
 Environment=NODE_ENV=production
-ExecStart=/usr/bin/node --max-old-space-size=128 /opt/affine/ai-gateway/claude-files/gateway.mjs
+ExecStart=/opt/affine/node --max-old-space-size=128 /opt/affine/ai-gateway/claude-files/gateway.mjs
 Restart=on-failure
 RestartSec=5
 UMask=0077
