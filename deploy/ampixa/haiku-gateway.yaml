@@ -1,0 +1,14 @@
+model_list:
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+      extra_headers:
+        anthropic-workspace-id: os.environ/ANTHROPIC_WORKSPACE_ID
+litellm_settings:
+  drop_params: true
+  turn_off_message_logging: true
+  num_retries: 0
+  request_timeout: 180
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
