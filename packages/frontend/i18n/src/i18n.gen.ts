@@ -10227,6 +10227,10 @@ export function useAFFiNEI18N(): {
       */
     ["error.COPILOT_PROMPT_INVALID"](): string;
     /**
+      * `This chat route does not support Extended Thinking or web search. Turn them off in the model menu, then send your message again.`
+      */
+    ["error.COPILOT_UNSUPPORTED_CHAT_OPTIONS"](): string;
+    /**
       * `Copilot provider {{provider}} does not support output type {{kind}}`
       */
     ["error.COPILOT_PROVIDER_NOT_SUPPORTED"](options: Readonly<{

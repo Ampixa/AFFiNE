@@ -778,6 +778,10 @@ export const USER_FRIENDLY_ERRORS = {
     type: 'invalid_input',
     message: `Copilot prompt is invalid.`,
   },
+  copilot_unsupported_chat_options: {
+    type: 'bad_request',
+    message: `This chat route does not support Extended Thinking or web search. Turn them off in the model menu, then send your message again.`,
+  },
   copilot_provider_not_supported: {
     type: 'invalid_input',
     args: { provider: 'string', kind: 'string' },

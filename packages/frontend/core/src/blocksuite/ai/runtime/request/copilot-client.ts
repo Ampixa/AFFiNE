@@ -30,6 +30,7 @@ import {
   SelectedSourcesProcessingError,
   SelectedSourcesUnavailableError,
   UnauthorizedError,
+  UnsupportedChatOptionsError,
 } from '../../provider/error';
 
 export enum Endpoint {
@@ -56,6 +57,9 @@ function isAbortError(error: UserFriendlyError) {
 }
 
 function codeToError(error: UserFriendlyError) {
+  if (error.name === 'COPILOT_UNSUPPORTED_CHAT_OPTIONS') {
+    return new UnsupportedChatOptionsError();
+  }
   if (error.name === 'COPILOT_SELECTED_SOURCES_PROCESSING') {
     return new SelectedSourcesProcessingError(error.message);
   }

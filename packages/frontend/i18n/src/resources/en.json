@@ -2522,6 +2522,7 @@
   "error.COPILOT_MESSAGE_NOT_FOUND": "Copilot message {{messageId}} not found.",
   "error.COPILOT_PROMPT_NOT_FOUND": "Copilot prompt {{name}} not found.",
   "error.COPILOT_PROMPT_INVALID": "Copilot prompt is invalid.",
+  "error.COPILOT_UNSUPPORTED_CHAT_OPTIONS": "This chat route does not support Extended Thinking or web search. Turn them off in the model menu, then send your message again.",
   "error.COPILOT_PROVIDER_NOT_SUPPORTED": "Copilot provider {{provider}} does not support output type {{kind}}",
   "error.COPILOT_PROVIDER_SIDE_ERROR": "Provider {{provider}} failed with {{kind}} error: {{message}}",
   "error.COPILOT_EMBEDDING_DISABLED": "Embedding feature is disabled, please contact the administrator to enable it in the workspace settings.",

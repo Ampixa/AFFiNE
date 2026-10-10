@@ -11,6 +11,7 @@ export enum AIErrorType {
   SelectedSourcesFailed = 'SelectedSourcesFailed',
   SelectedSourcesUnavailable = 'SelectedSourcesUnavailable',
   SelectedSourcesLimitExceeded = 'SelectedSourcesLimitExceeded',
+  UnsupportedChatOptions = 'UnsupportedChatOptions',
 }
 
 export class UnauthorizedError extends BaseAIError {
@@ -80,7 +81,12 @@ export class SelectedSourcesLimitExceededError extends BaseAIError {
   }
 }
 
+export class UnsupportedChatOptionsError extends BaseAIError {
+  readonly type = AIErrorType.UnsupportedChatOptions;
+}
+
 export type AIError =
+  | UnsupportedChatOptionsError
   | UnauthorizedError
   | PaymentRequiredError
   | GeneralNetworkError

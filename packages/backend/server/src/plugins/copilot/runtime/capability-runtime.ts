@@ -231,20 +231,23 @@ export class CapabilityRuntime {
     const runtimeEvents = this.events;
     const eventContext = this.eventContext(options);
     async function* productEvents() {
-      for await (const event of rawStream) {
-        if ('route' in event) {
-          await runtimeEvents.consume([event], eventContext);
-        } else if (event.type === 'error') {
-          throw mapNativeSemanticError(
-            new Error(
+      try {
+        for await (const event of rawStream) {
+          if ('route' in event) {
+            await runtimeEvents.consume([event], eventContext);
+          } else if (event.type === 'error') {
+            throw new Error(
               typeof event.message === 'string'
                 ? event.message
                 : 'native runtime stream error'
-            )
-          );
-        } else {
-          yield event;
+            );
+          } else {
+            yield event;
+          }
         }
+      } catch (error) {
+        // Native failures can arrive as error events or rejected iteration.
+        throw mapNativeSemanticError(error);
       }
     }
     return { request, stream: productEvents() };

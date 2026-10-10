@@ -5,6 +5,7 @@ import {
   CopilotSelectedSourcesLimitExceeded,
   CopilotSelectedSourcesProcessing,
   CopilotSelectedSourcesUnavailable,
+  CopilotUnsupportedChatOptions,
 } from '../../base';
 import type { BackendRuntimeEmbeddingJob } from '../../core/backend-runtime';
 import type { DocMarkdown, DocReader } from '../../core/doc/reader';
@@ -441,14 +442,14 @@ test.serial(
           reasoning: 'true',
           messageId: 'message',
         }),
-        { message: /Turn off/ }
+        { instanceOf: CopilotUnsupportedChatOptions }
       );
       await t.throwsAsync(
         f.orchestrator.streamObject('user', 'session', {
           webSearch: 'true',
           messageId: 'message',
         }),
-        { message: /Turn off/ }
+        { instanceOf: CopilotUnsupportedChatOptions }
       );
     } finally {
       if (before === undefined) delete process.env.AFFINE_CLAUDE_FILE_PROFILES;

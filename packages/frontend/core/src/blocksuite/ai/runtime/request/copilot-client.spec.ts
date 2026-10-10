@@ -4,14 +4,35 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import {
+  GeneralNetworkError,
   SelectedSourcesFailedError,
   SelectedSourcesLimitExceededError,
   SelectedSourcesProcessingError,
   SelectedSourcesUnavailableError,
+  UnsupportedChatOptionsError,
 } from '../../provider/error';
 import { CopilotClient, Endpoint, resolveError } from './copilot-client';
 
 describe('CopilotClient action streams', () => {
+  test('unsupported chat options have a dedicated UI error without provider details', () => {
+    const error = resolveError({
+      name: 'COPILOT_UNSUPPORTED_CHAT_OPTIONS',
+      type: 'BAD_REQUEST',
+      status: 400,
+      message: 'untrusted provider diagnostic',
+    });
+    expect(error).toBeInstanceOf(UnsupportedChatOptionsError);
+    expect(error.message).not.toContain('untrusted');
+    expect(
+      resolveError({
+        name: 'INTERNAL_SERVER_ERROR',
+        type: 'INTERNAL_SERVER_ERROR',
+        status: 500,
+        message: 'An internal error occurred.',
+      })
+    ).toBeInstanceOf(GeneralNetworkError);
+  });
+
   test('routes action endpoint outside the deprecated workflow path', () => {
     const eventSource = vi.fn(
       () =>

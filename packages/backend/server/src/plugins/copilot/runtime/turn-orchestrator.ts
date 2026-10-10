@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import {
   CopilotPromptInvalid,
   CopilotSelectedSourcesUnavailable,
+  CopilotUnsupportedChatOptions,
 } from '../../../base';
 import { BackendRuntimeEmbeddingJob } from '../../../core/backend-runtime';
 import { type Turn } from '../core';
@@ -81,9 +82,7 @@ export class TurnOrchestrator {
       scope.requiredArtifactIds.length > 0;
     if (directFiles) {
       if (reasoning || webSearch) {
-        throw new CopilotPromptInvalid(
-          'Turn off reasoning and web search when using Claude file chat.'
-        );
+        throw new CopilotUnsupportedChatOptions();
       }
       if (
         toolsConfig.readingDocs === false ||

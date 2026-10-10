@@ -1,7 +1,11 @@
 import ava from 'ava';
 import { z } from 'zod';
 
-import { Config, CopilotQuotaExceeded } from '../../base';
+import {
+  Config,
+  CopilotQuotaExceeded,
+  CopilotUnsupportedChatOptions,
+} from '../../base';
 import type { BackendRuntimeProvider } from '../../core/backend-runtime';
 import type { Models } from '../../models';
 import type { ByokEntitlementPolicy } from '../../plugins/copilot/byok';
@@ -19,7 +23,7 @@ async function collect<T>(source: AsyncIterable<T>) {
   return values;
 }
 
-function runtimeFixture(streamError?: string, enabled = true) {
+function runtimeFixture(streamError?: string | Error, enabled = true) {
   const calls: Array<{
     slot: string;
     request?: unknown;
@@ -58,6 +62,7 @@ function runtimeFixture(streamError?: string, enabled = true) {
     }) => {
       calls.push(input);
       async function* events() {
+        if (streamError instanceof Error) throw streamError;
         if (streamError) {
           yield { type: 'error', message: streamError };
           return;
@@ -194,6 +199,44 @@ test('text streaming consumes native generic events', async t => {
       ),
     { instanceOf: CopilotQuotaExceeded }
   );
+});
+
+for (const kind of ['event', 'throw'] as const) {
+  for (const mode of ['streamText', 'streamObject'] as const) {
+    test(`${mode} preserves actionable option errors from native ${kind}`, async t => {
+      const message =
+        'http transport error: Reasoning and web search are unavailable on the file-chat route';
+      const { runtime, calls } = runtimeFixture(
+        kind === 'throw' ? new Error(message) : message
+      );
+      // Auto routing: no explicit profile and no binary attachment. This is the
+      // path that bypassed the selected-file preflight and became a generic 500.
+      const error = await t.throwsAsync(
+        async () => {
+          for await (const _ of runtime[mode](
+            {},
+            [{ role: 'user', content: 'Summarize the selected Page.' }],
+            { reasoning: true }
+          )) {
+            t.fail('Rejected requests must not produce answer chunks');
+          }
+        },
+        { instanceOf: CopilotUnsupportedChatOptions }
+      );
+      t.is(error?.status, 400);
+      t.is(calls.length, 1); // no automatic replay/fallback
+      t.is(calls[0].targetOverride, undefined);
+    });
+  }
+}
+
+test('unrelated stream exceptions preserve their original error', async t => {
+  const failure = new Error('upstream unavailable');
+  const { runtime } = runtimeFixture(failure);
+  const error = await t.throwsAsync(async () =>
+    collect(runtime.streamText({}, [{ role: 'user', content: 'hello' }]))
+  );
+  t.is(error, failure);
 });
 
 test('product event consumer records route activity and real usage', async t => {
