@@ -183,7 +183,7 @@ export const CloudWorkspaceMembersPanel = ({
 
   const onGenerateInviteLink = useCallback(
     async (expireTime: WorkspaceInviteLinkExpireTime) => {
-      const { link } = await membersService.generateInviteLink(expireTime);
+      const link = await membersService.generateInviteLink(expireTime);
       workspaceShareSettingService.sharePreview.revalidateInviteLink();
       return link;
     },

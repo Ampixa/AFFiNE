@@ -1,3 +1,4 @@
+import { scheduleAt } from '@affine/component';
 import { DebugLogger } from '@affine/debug';
 import type {
   RealtimeTopicEventOf,
@@ -21,7 +22,7 @@ export class WorkspaceShareSetting extends Entity {
   isLoading$ = new LiveData(false);
   error$ = new LiveData<any>(null);
   private inviteLinkStarted = false;
-  private inviteLinkExpireTimer?: ReturnType<typeof setTimeout>;
+  private cancelInviteLinkExpiry?: () => void;
   private readonly configLiveQuery = new RealtimeLiveQuery<
     WorkspaceConfigSnapshot,
     RealtimeTopicEventOf<'workspace.config.changed'>
@@ -132,22 +133,14 @@ export class WorkspaceShareSetting extends Entity {
     if (!Number.isFinite(expireAt)) {
       return;
     }
-    const delay = expireAt - Date.now();
-    if (delay <= 0) {
+    this.cancelInviteLinkExpiry = scheduleAt(expireAt, () => {
       this.inviteLink$.next(null);
-      return;
-    }
-    this.inviteLinkExpireTimer = setTimeout(() => {
-      this.inviteLink$.next(null);
-    }, delay);
-    this.inviteLinkExpireTimer.unref?.();
+    });
   }
 
   private clearInviteLinkExpireTimer() {
-    if (this.inviteLinkExpireTimer) {
-      clearTimeout(this.inviteLinkExpireTimer);
-      this.inviteLinkExpireTimer = undefined;
-    }
+    this.cancelInviteLinkExpiry?.();
+    this.cancelInviteLinkExpiry = undefined;
   }
 
   private async requestWorkspaceConfig(signal: AbortSignal) {

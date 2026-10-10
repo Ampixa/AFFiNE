@@ -109,7 +109,7 @@ export class McpCredentialResolver {
 
   @Query(() => Boolean)
   mcpCredentialReadWriteAvailable() {
-    return env.dev || env.namespaces.canary;
+    return env.mcpWriteEnabled;
   }
 
   @Mutation(() => RevealedMcpCredentialType)
@@ -117,11 +117,7 @@ export class McpCredentialResolver {
     @CurrentUser() user: CurrentUser,
     @Args('input') input: CreateMcpCredentialInput
   ) {
-    if (
-      input.accessMode === McpAccessMode.READ_WRITE &&
-      !env.dev &&
-      !env.namespaces.canary
-    ) {
+    if (input.accessMode === McpAccessMode.READ_WRITE && !env.mcpWriteEnabled) {
       throw new BadRequestException('MCP write tools are not available');
     }
     await this.ac

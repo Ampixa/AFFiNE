@@ -87,6 +87,8 @@ export class Env implements AppEnv {
     Namespace.Production,
     Object.values(Namespace)
   );
+  MCP_WRITE_ENABLED =
+    readEnv('AFFINE_MCP_WRITE_ENABLED', 'false', ['true', 'false']) === 'true';
   DEPLOYMENT_TYPE = readEnv(
     'DEPLOYMENT_TYPE',
     this.dev ? DeploymentType.Affine : DeploymentType.Selfhosted,
@@ -99,6 +101,14 @@ export class Env implements AppEnv {
 
   get selfhosted() {
     return this.DEPLOYMENT_TYPE === DeploymentType.Selfhosted;
+  }
+
+  get mcpWriteEnabled() {
+    return (
+      this.dev ||
+      this.namespaces.canary ||
+      (this.selfhosted && this.MCP_WRITE_ENABLED)
+    );
   }
 
   isFlavor(flavor: Flavor) {

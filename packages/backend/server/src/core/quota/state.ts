@@ -7,6 +7,7 @@ import {
 
 import { EventBus, OnEvent } from '../../base';
 import { EntitlementService } from '../entitlement';
+import { UnlimitedMemberLimit } from './constants';
 
 type Quota = Awaited<
   ReturnType<EntitlementService['resolveUserEntitlement']>
@@ -164,7 +165,8 @@ export class QuotaStateService {
       ? ownerState.usedStorageQuota
       : workspaceStorageUsage;
     const storageQuota = BigInt(quota.storageQuota);
-    const seatLimit = quota.seatLimit ?? 0;
+    const seatLimit =
+      plan === 'selfhost_free' ? UnlimitedMemberLimit : (quota.seatLimit ?? 0);
     const overcapacityMemberCount = Math.max(memberCount - seatLimit, 0);
     const readonlyReasons = [
       overcapacityMemberCount > 0 ? 'member_overflow' : null,

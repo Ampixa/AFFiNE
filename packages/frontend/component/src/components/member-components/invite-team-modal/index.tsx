@@ -18,7 +18,7 @@ export interface InviteTeamMemberModalProps {
   copyTextToClipboard: (text: string) => Promise<boolean>;
   onGenerateInviteLink: (
     expireTime: WorkspaceInviteLinkExpireTime
-  ) => Promise<string>;
+  ) => Promise<InviteLink>;
   onRevokeInviteLink: () => Promise<boolean>;
   importCSV: React.ReactNode;
   invitationLink: InviteLink | null;

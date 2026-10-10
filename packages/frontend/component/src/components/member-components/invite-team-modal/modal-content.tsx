@@ -37,7 +37,7 @@ export const ModalContent = ({
   copyTextToClipboard: (text: string) => Promise<boolean>;
   onGenerateInviteLink: (
     expireTime: WorkspaceInviteLinkExpireTime
-  ) => Promise<string>;
+  ) => Promise<InviteLink>;
   onRevokeInviteLink: () => Promise<boolean>;
 }) => {
   const t = useI18n();

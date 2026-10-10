@@ -6,12 +6,13 @@ import { useI18n } from '@affine/i18n';
 import { CloseIcon } from '@blocksuite/icons/rc';
 import { cssVar } from '@toeverything/theme';
 import { cssVarV2 } from '@toeverything/theme/v2';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { Button, IconButton } from '../../../ui/button';
 import Input from '../../../ui/input';
 import { Menu, MenuItem, MenuTrigger } from '../../../ui/menu';
 import { notify } from '../../../ui/notification';
+import { scheduleAt } from '../../../utils/schedule-at';
 import * as styles from './styles.css';
 
 const getMenuItems = (t: ReturnType<typeof useI18n>) => [
@@ -50,11 +51,24 @@ export const LinkInvite = ({
   invitationLink: InviteLink | null;
   generateInvitationLink: (
     expireTime: WorkspaceInviteLinkExpireTime
-  ) => Promise<string>;
+  ) => Promise<InviteLink>;
   revokeInvitationLink: () => Promise<boolean>;
   copyTextToClipboard: (text: string) => Promise<boolean>;
 }) => {
   const t = useI18n();
+  const [generatedInvitationLink, setGeneratedInvitationLink] =
+    useState<InviteLink | null>(null);
+  const activeInvitationLink = invitationLink ?? generatedInvitationLink;
+
+  useEffect(() => {
+    if (!generatedInvitationLink) {
+      return;
+    }
+    return scheduleAt(
+      new Date(generatedInvitationLink.expireTime).getTime(),
+      () => setGeneratedInvitationLink(null)
+    );
+  }, [generatedInvitationLink]);
   const [selectedValue, setSelectedValue] = useState(
     WorkspaceInviteLinkExpireTime.OneWeek
   );
@@ -72,21 +86,24 @@ export const LinkInvite = ({
     [menuItems, selectedValue]
   );
 
-  const onGenerate = useCallback(() => {
-    generateInvitationLink(selectedValue).catch(err => {
+  const onGenerate = useCallback(async () => {
+    try {
+      const link = await generateInvitationLink(selectedValue);
+      setGeneratedInvitationLink(link);
+    } catch (err) {
       console.error('Failed to generate invitation link: ', err);
       notify.error({
         title: 'Failed to generate invitation link',
-        message: err.message,
+        message: err instanceof Error ? err.message : String(err),
       });
-    });
+    }
   }, [generateInvitationLink, selectedValue]);
 
   const onCopy = useCallback(() => {
-    if (!invitationLink) {
+    if (!activeInvitationLink) {
       return;
     }
-    copyTextToClipboard(invitationLink.link)
+    copyTextToClipboard(activeInvitationLink.link)
       .then(() =>
         notify.success({
           title: t['Copied link to clipboard'](),
@@ -99,25 +116,30 @@ export const LinkInvite = ({
           message: err.message,
         });
       });
-  }, [copyTextToClipboard, invitationLink, t]);
+  }, [activeInvitationLink, copyTextToClipboard, t]);
 
-  const onReset = useCallback(() => {
-    revokeInvitationLink().catch(err => {
+  const onReset = useCallback(async () => {
+    try {
+      const revoked = await revokeInvitationLink();
+      if (revoked) {
+        setGeneratedInvitationLink(null);
+      }
+    } catch (err) {
       console.error('Failed to revoke invitation link: ', err);
       notify.error({
         title: 'Failed to revoke invitation link',
-        message: err.message,
+        message: err instanceof Error ? err.message : String(err),
       });
-    });
+    }
   }, [revokeInvitationLink]);
 
   const expireTime = useMemo(() => {
     return t['com.affine.payment.member.team.invite.expire-at']({
-      expireTime: invitationLink?.expireTime
-        ? new Date(invitationLink.expireTime).toLocaleString()
+      expireTime: activeInvitationLink?.expireTime
+        ? new Date(activeInvitationLink.expireTime).toLocaleString()
         : '',
     });
-  }, [invitationLink, t]);
+  }, [activeInvitationLink, t]);
 
   return (
     <>
@@ -125,7 +147,7 @@ export const LinkInvite = ({
         <div className={styles.modalSubTitle}>
           {t['com.affine.payment.member.team.invite.link-expiration']()}
         </div>
-        {invitationLink ? (
+        {activeInvitationLink ? (
           <Input
             value={expireTime}
             disabled
@@ -155,8 +177,8 @@ export const LinkInvite = ({
         <div className={styles.invitationLinkContent}>
           <Input
             value={
-              invitationLink
-                ? invitationLink.link
+              activeInvitationLink
+                ? activeInvitationLink.link
                 : 'https://your-app.com/invite/xxxxxxxx'
             }
             inputMode="none"
@@ -164,12 +186,12 @@ export const LinkInvite = ({
             inputStyle={{
               fontSize: cssVar('fontXs'),
               color: cssVarV2(
-                invitationLink ? 'text/primary' : 'text/placeholder'
+                activeInvitationLink ? 'text/primary' : 'text/placeholder'
               ),
               backgroundColor: cssVarV2('layer/background/primary'),
             }}
           />
-          {invitationLink ? (
+          {activeInvitationLink ? (
             <>
               <Button onClick={onCopy} variant="secondary">
                 {t['com.affine.payment.member.team.invite.copy']()}

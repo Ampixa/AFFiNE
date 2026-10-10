@@ -5,6 +5,7 @@ import {
   type UserQuota,
   WorkspaceQuota as BaseWorkspaceQuota,
 } from '../../models';
+import { UnlimitedMemberLimit } from './constants';
 import { QuotaStateService } from './state';
 import {
   UserQuotaHumanReadableType,
@@ -88,7 +89,10 @@ export class QuotaService {
       storageQuota: formatSize(quota.storageQuota),
       usedStorageQuota: formatSize(quota.usedStorageQuota),
       historyPeriod: formatDate(quota.historyPeriod),
-      memberLimit: quota.memberLimit.toString(),
+      memberLimit:
+        quota.memberLimit >= UnlimitedMemberLimit
+          ? 'Unlimited'
+          : quota.memberLimit.toString(),
       copilotActionLimit: quota.copilotActionLimit
         ? `${quota.copilotActionLimit} times`
         : 'Unlimited',
@@ -128,7 +132,10 @@ export class QuotaService {
       storageQuota: formatSize(quota.storageQuota),
       storageQuotaUsed: formatSize(quota.usedStorageQuota),
       historyPeriod: formatDate(quota.historyPeriod),
-      memberLimit: quota.memberLimit.toString(),
+      memberLimit:
+        quota.memberLimit >= UnlimitedMemberLimit
+          ? 'Unlimited'
+          : quota.memberLimit.toString(),
       memberCount: quota.memberCount.toString(),
       overcapacityMemberCount: quota.overcapacityMemberCount.toString(),
     };
@@ -218,9 +225,8 @@ export class QuotaService {
   }
 
   private userMemberLimit(plan: string) {
-    return plan === 'pro' || plan === 'lifetime_pro' || plan === 'selfhost_free'
-      ? 10
-      : 3;
+    if (plan === 'selfhost_free') return UnlimitedMemberLimit;
+    return plan === 'pro' || plan === 'lifetime_pro' ? 10 : 3;
   }
 
   private planName(plan: string) {

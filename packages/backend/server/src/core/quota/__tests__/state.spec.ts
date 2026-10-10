@@ -20,6 +20,7 @@ import {
   SubscriptionRecurring,
 } from '../../../plugins/payment/types';
 import { EntitlementModule, EntitlementService } from '../../entitlement';
+import { UnlimitedMemberLimit } from '../constants';
 import { QuotaService } from '../service';
 import { QuotaServiceModule } from '../service.module';
 import { QuotaStateService } from '../state';
@@ -287,7 +288,7 @@ test('workspace team status follows entitlement', async t => {
   t.true(await t.context.models.workspace.isTeamWorkspace(workspace.id));
 });
 
-test('selfhosted builtin free has cloud pro quota rights', async t => {
+test('selfhosted builtin free has unlimited workspace members', async t => {
   const previousDeploymentType = globalThis.env.DEPLOYMENT_TYPE;
   // @ts-expect-error test mutates env singleton for deployment-specific quota semantics
   globalThis.env.DEPLOYMENT_TYPE = 'selfhosted';
@@ -296,20 +297,49 @@ test('selfhosted builtin free has cloud pro quota rights', async t => {
 
     const userState = await t.context.state.reconcileUserQuotaState(owner.id);
     const userQuota = await t.context.quota.getUserQuota(owner.id);
+    const userQuotaWithUsage = await t.context.quota.getUserQuotaWithUsage(
+      owner.id
+    );
+    // Put the workspace above the former cap to verify the reconciled quota.
+    for (let index = 0; index < 10; index++) {
+      const member = await t.context.models.user.create({
+        email: `${randomUUID()}@affine.pro`,
+      });
+      await t.context.models.workspaceUser.set(
+        workspace.id,
+        member.id,
+        WorkspaceRole.Collaborator,
+        { status: WorkspaceMemberStatus.Accepted }
+      );
+    }
     const workspaceState = await t.context.state.reconcileWorkspaceQuotaState(
       workspace.id
     );
     const workspaceQuota = await t.context.quota.getWorkspaceQuota(
       workspace.id
     );
+    const workspaceQuotaWithUsage =
+      await t.context.quota.getWorkspaceQuotaWithUsage(workspace.id);
 
     t.is(userState.plan, 'selfhost_free');
     t.is(userState.storageQuota, BigInt(100 * ONE_GB));
     t.is(userQuota.name, 'Pro');
-    t.is(userQuota.memberLimit, 10);
+    t.is(userQuota.memberLimit, UnlimitedMemberLimit);
+    t.is(
+      t.context.quota.formatUserQuota(userQuotaWithUsage).memberLimit,
+      'Unlimited'
+    );
     t.is(workspaceState.plan, 'selfhost_free');
+    t.true(workspaceState.memberCount > 10);
+    t.false(workspaceState.readonly);
     t.is(workspaceQuota.name, 'Pro');
-    t.is(workspaceQuota.memberLimit, 10);
+    t.is(workspaceState.seatLimit, UnlimitedMemberLimit);
+    t.is(workspaceQuota.memberLimit, UnlimitedMemberLimit);
+    t.is(
+      t.context.quota.formatWorkspaceQuota(workspaceQuotaWithUsage).memberLimit,
+      'Unlimited'
+    );
+    t.true(await t.context.quota.tryCheckSeat(workspace.id));
   } finally {
     // @ts-expect-error restore mutable test env singleton
     globalThis.env.DEPLOYMENT_TYPE = previousDeploymentType;
