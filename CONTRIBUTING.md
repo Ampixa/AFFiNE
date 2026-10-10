@@ -27,6 +27,8 @@ If `origin` points to your personal fork, fetch the base from your remote for `A
 
 For document search provisioning, acceptance checks and rollback, see
 [the workspace search runbook](deploy/ampixa/SEARCH.md).
+For hosted document AI embeddings alongside Haiku, see
+[the embeddings runbook](deploy/ampixa/EMBEDDINGS.md).
 
 ## Relationship to upstream
 
