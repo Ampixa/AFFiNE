@@ -1,7 +1,7 @@
 import test from 'ava';
 
 import type { Config } from '../../base';
-import type { DocReader, DocWriter } from '../../core/doc';
+import type { DocReader, DocWriter, KanbanService } from '../../core/doc';
 import type { PermissionAccess } from '../../core/permission';
 import type { Models } from '../../models';
 import { WorkspaceMcpProvider } from '../../plugins/copilot/mcp/provider';
@@ -66,7 +66,8 @@ function fixture(
     ac,
     {} as DocReader,
     {} as DocWriter,
-    retrieval
+    retrieval,
+    {} as KanbanService
   );
   return { provider, calls };
 }

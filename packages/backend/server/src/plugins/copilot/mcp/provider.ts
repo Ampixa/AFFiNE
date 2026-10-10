@@ -2,7 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { McpAccessMode } from '@prisma/client';
 import z from 'zod/v3';
 
-import { DocReader, DocWriter } from '../../../core/doc';
+import { DocReader, DocWriter, KanbanService } from '../../../core/doc';
+import { KanbanError } from '../../../core/doc/kanban-document';
 import { PermissionAccess } from '../../../core/permission';
 import { DocumentRetrievalService } from '../retrieval/document';
 
@@ -100,7 +101,8 @@ export class WorkspaceMcpProvider {
     private readonly ac: PermissionAccess,
     private readonly reader: DocReader,
     private readonly writer: DocWriter,
-    private readonly retrieval: DocumentRetrievalService
+    private readonly retrieval: DocumentRetrievalService,
+    private readonly kanban: KanbanService
   ) {}
 
   async for(
@@ -216,14 +218,113 @@ export class WorkspaceMcpProvider {
       },
     });
 
-    const tools = [readDocument, docSearch];
+    const kanbanId = z.string().min(1).max(128);
+    const boardArgs = { docId: kanbanId, blockId: kanbanId, viewId: kanbanId };
+    const boardProperties = {
+      docId: { type: 'string', minLength: 1, maxLength: 128 },
+      blockId: { type: 'string', minLength: 1, maxLength: 128 },
+      viewId: { type: 'string', minLength: 1, maxLength: 128 },
+    };
+    const columnProperty = {
+      type: ['string', 'null'],
+      minLength: 1,
+      maxLength: 128,
+      description:
+        'Status option ID returned by read_kanban_board; null means Ungrouped. Never pass a column name.',
+    };
+    const executeKanban = async <T extends object>(
+      docId: string,
+      write: boolean,
+      signal: AbortSignal,
+      action: () => Promise<T>
+    ): Promise<WorkspaceMcpToolResult> => {
+      if (
+        write &&
+        (accessMode !== McpAccessMode.READ_WRITE || !env.mcpWriteEnabled)
+      ) {
+        return toolError('Kanban writes are disabled.');
+      }
+      const accessible = await this.ac
+        .user(userId)
+        .workspace(workspaceId)
+        .doc(docId)
+        .can(write ? 'Doc.Update' : 'Doc.Read');
+      if (!accessible) return toolError(`Doc with id ${docId} not found.`);
+      const aborted = abortIfNeeded(signal);
+      if (aborted) return aborted;
+      try {
+        const result = await action();
+        return toolText(JSON.stringify({ docId, ...result }));
+      } catch (error) {
+        // Document contents and infrastructure errors must not leak through MCP.
+        if (signal.aborted)
+          return toolError(
+            'Request aborted. Check the board before retrying a write.'
+          );
+        return toolError(
+          error instanceof KanbanError
+            ? error.message
+            : 'KANBAN_UNAVAILABLE: The board could not be read or saved. Retry later; reuse requestId for create retries.'
+        );
+      }
+    };
+    const listKanbanBoards = defineTool({
+      name: 'list_kanban_boards',
+      title: 'List Kanban Boards',
+      description:
+        'Discover database Kanban views in a known document, including blockId/viewId and support status. Use doc_search or a document link to obtain docId first.',
+      parser: z.object({ docId: kanbanId }).strict(),
+      inputSchema: {
+        type: 'object',
+        properties: { docId: boardProperties.docId },
+        required: ['docId'],
+        additionalProperties: false,
+      },
+      execute: async ({ docId }, { signal }) =>
+        executeKanban(docId, false, signal, () =>
+          this.kanban.read(workspaceId, docId, signal, board =>
+            board.listBoards()
+          )
+        ),
+    });
+    const readKanbanBoard = defineTool({
+      name: 'read_kanban_board',
+      title: 'Read Kanban Board',
+      description:
+        'Read single-select Kanban columns and paginated tasks with stable IDs. Returns all database rows in source order, not the view filter or manual card order. Read before creating or moving tasks.',
+      parser: z
+        .object({
+          ...boardArgs,
+          offset: z.number().int().min(0).max(1000000).default(0),
+          limit: z.number().int().min(1).max(100).default(50),
+        })
+        .strict(),
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...boardProperties,
+          offset: { type: 'integer', minimum: 0, maximum: 1000000, default: 0 },
+          limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+        },
+        required: ['docId', 'blockId', 'viewId'],
+        additionalProperties: false,
+      },
+      execute: async ({ docId, blockId, viewId, offset, limit }, { signal }) =>
+        executeKanban(docId, false, signal, () =>
+          this.kanban.read(workspaceId, docId, signal, board =>
+            board.readBoard(blockId, viewId, offset, limit)
+          )
+        ),
+    });
+
+    const tools = [readDocument, docSearch, listKanbanBoards, readKanbanBoard];
 
     if (accessMode === McpAccessMode.READ_WRITE && env.mcpWriteEnabled) {
       const createDocument = defineTool({
         name: 'create_document',
         title: 'Create Document',
         description:
-          'Create a new document in the workspace with the given title and markdown content. Returns the ID of the created document. This tool not support insert or update database block and image yet.',
+          'Create a new document in the workspace with the given title and markdown content. Returns the ID of the created document. Does not insert databases or images. For tasks on an existing Kanban board, use create_kanban_task.',
         parser: z.object({
           title: z.string().min(1),
           content: z.string(),
@@ -285,7 +386,7 @@ export class WorkspaceMcpProvider {
         name: 'update_document',
         title: 'Update Document',
         description:
-          'Update an existing document with new markdown content (body only). Uses structural diffing to apply minimal changes, preserving document history and enabling real-time collaboration. This does NOT update the document title. This tool not support insert or update database block and image yet.',
+          'Update an existing document with new markdown content (body only). Uses structural diffing to apply minimal changes, preserving document history and enabling real-time collaboration. This does NOT update the document title, databases, or images. Use create_kanban_task or move_kanban_task for Kanban cards.',
         parser: z.object({
           docId: z.string(),
           content: z.string(),
@@ -398,12 +499,107 @@ export class WorkspaceMcpProvider {
         },
       });
 
-      tools.push(createDocument, updateDocument, updateDocumentMeta);
+      const createKanbanTask = defineTool({
+        name: 'create_kanban_task',
+        title: 'Create Kanban Task',
+        description:
+          'Create a plain-text card in an existing, unfiltered single-select Kanban view. Use columnId from read_kanban_board. Generate a requestId once and reuse it for retries to avoid duplicate tasks; use a new ID for each new task.',
+        parser: z
+          .object({
+            ...boardArgs,
+            title: z.string().trim().min(1).max(1000),
+            columnId: kanbanId.nullable(),
+            requestId: z
+              .string()
+              .min(8)
+              .max(128)
+              .regex(/^[a-zA-Z0-9_-]+$/),
+          })
+          .strict(),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ...boardProperties,
+            title: { type: 'string', minLength: 1, maxLength: 1000 },
+            columnId: columnProperty,
+            requestId: {
+              type: 'string',
+              minLength: 8,
+              maxLength: 128,
+              pattern: '^[a-zA-Z0-9_-]+$',
+            },
+          },
+          required: [
+            'docId',
+            'blockId',
+            'viewId',
+            'title',
+            'columnId',
+            'requestId',
+          ],
+          additionalProperties: false,
+        },
+        execute: async (
+          { docId, blockId, viewId, title, columnId, requestId },
+          { signal }
+        ) =>
+          executeKanban(docId, true, signal, () =>
+            this.kanban.write(workspaceId, docId, userId, signal, board =>
+              board.createTask(
+                blockId,
+                viewId,
+                title,
+                columnId,
+                requestId,
+                userId
+              )
+            )
+          ),
+      });
+      const moveKanbanTask = defineTool({
+        name: 'move_kanban_task',
+        title: 'Move Kanban Task',
+        description:
+          'Move an existing card to a returned columnId (or null for Ungrouped) in an unfiltered single-select Kanban view. Changes only its status and edit metadata; preserves title, other properties, and view ordering. Moving to its current column is a no-op.',
+        parser: z
+          .object({
+            ...boardArgs,
+            taskId: kanbanId,
+            columnId: kanbanId.nullable(),
+          })
+          .strict(),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ...boardProperties,
+            taskId: boardProperties.blockId,
+            columnId: columnProperty,
+          },
+          required: ['docId', 'blockId', 'viewId', 'taskId', 'columnId'],
+          additionalProperties: false,
+        },
+        execute: async (
+          { docId, blockId, viewId, taskId, columnId },
+          { signal }
+        ) =>
+          executeKanban(docId, true, signal, () =>
+            this.kanban.write(workspaceId, docId, userId, signal, board =>
+              board.moveTask(blockId, viewId, taskId, columnId, userId)
+            )
+          ),
+      });
+      tools.push(
+        createDocument,
+        updateDocument,
+        updateDocumentMeta,
+        createKanbanTask,
+        moveKanbanTask
+      );
     }
 
     return {
       name: `AFFiNE MCP Server for Workspace ${workspaceId}`,
-      version: '1.0.1',
+      version: '1.1.0',
       tools,
     };
   }

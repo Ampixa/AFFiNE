@@ -28,6 +28,9 @@ If `origin` points to your personal fork, fetch the base from your remote for `A
 For document search provisioning, acceptance checks and rollback, see
 [the workspace search runbook](deploy/ampixa/SEARCH.md).
 
+For creating and moving native Kanban cards through MCP, see
+[the Kanban tools guide](deploy/ampixa/MCP-KANBAN.md).
+
 ## Relationship to upstream
 
 `toeverything/AFFiNE` is the upstream project. Submit Ampixa deployment changes here. Propose general upstream changes to `toeverything/AFFiNE` according to that project's contribution process.
