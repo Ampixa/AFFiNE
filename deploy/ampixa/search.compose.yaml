@@ -1,0 +1,31 @@
+# Companion to the native/systemd AFFiNE deployment. The server connects over
+# loopback; do not publish this unauthenticated search service on a public IP.
+name: affine-search
+services:
+  search:
+    # Same version as the repository's server CI.
+    image: manticoresearch/manticore:10.1.0
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:${AFFINE_SEARCH_PORT:-9308}:9308'
+    volumes:
+      - search-data:/var/lib/manticore
+    mem_limit: 1g
+    cpus: 1
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ['CMD', 'mysql', '-h127.0.0.1', '-P9306', '-e', 'SELECT 1']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+volumes:
+  search-data:
