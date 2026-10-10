@@ -156,6 +156,19 @@ performed by the local test commands.
    must stay enabled as consent controls even though no embedding route is used.
    An unavailable embedding status can remain; this feature does not fix it.
 
+### Unsupported chat options
+
+The file-chat gateway rejects Extended Thinking and web search, including when
+Auto selects this profile for a text-only or selected-Page request. AFFiNE maps
+that known rejection to `COPILOT_UNSUPPORTED_CHAT_OPTIONS` (400 semantics) and
+shows instructions to turn those options off in the model menu and send again.
+An already-open SSE response keeps its HTTP status and carries the error in its
+error event. There is no automatic retry or silent removal of requested options.
+Deploy the backend and frontend together for the actionable chat message; the
+mapping also recognizes the existing gateway's error, so this fix does not
+require a gateway update, migration, or configuration change. Other provider
+failures retain their existing error handling.
+
 ## Tests and acceptance
 
 Local commands from the repository root:

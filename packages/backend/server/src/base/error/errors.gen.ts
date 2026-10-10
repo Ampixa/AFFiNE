@@ -845,6 +845,12 @@ export class CopilotPromptInvalid extends UserFriendlyError {
     super('invalid_input', 'copilot_prompt_invalid', message);
   }
 }
+
+export class CopilotUnsupportedChatOptions extends UserFriendlyError {
+  constructor(message?: string) {
+    super('bad_request', 'copilot_unsupported_chat_options', message);
+  }
+}
 @ObjectType()
 class CopilotProviderNotSupportedDataType {
   @Field() provider!: string
@@ -1283,6 +1289,7 @@ export enum ErrorNames {
   COPILOT_MESSAGE_NOT_FOUND,
   COPILOT_PROMPT_NOT_FOUND,
   COPILOT_PROMPT_INVALID,
+  COPILOT_UNSUPPORTED_CHAT_OPTIONS,
   COPILOT_PROVIDER_NOT_SUPPORTED,
   COPILOT_PROVIDER_SIDE_ERROR,
   COPILOT_EMBEDDING_DISABLED,

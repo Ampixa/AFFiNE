@@ -18,6 +18,7 @@ import {
   SelectedSourcesProcessingError,
   SelectedSourcesUnavailableError,
   UnauthorizedError,
+  UnsupportedChatOptionsError,
 } from '../provider';
 
 export class AIErrorWrapper extends SignalWatcher(WithDisposable(LitElement)) {
@@ -259,6 +260,12 @@ export function AIChatErrorRenderer(
     return PaymentRequiredErrorRenderer(host);
   } else if (error instanceof UnauthorizedError) {
     return LoginRequiredErrorRenderer(host);
+  } else if (error instanceof UnsupportedChatOptionsError) {
+    return GeneralErrorRenderer({
+      text: I18n['error.COPILOT_UNSUPPORTED_CHAT_OPTIONS'](),
+      // Retry replays the same options. Ask for an explicit edit and new send.
+      showAction: false,
+    });
   } else if (error instanceof SelectedSourcesProcessingError) {
     return GeneralErrorRenderer({
       text: I18n['com.affine.ai.error.selectedSourcesProcessing'](),
