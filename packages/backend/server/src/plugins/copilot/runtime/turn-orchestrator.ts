@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
 
+import { CopilotSelectedSourcesUnavailable } from '../../../base';
 import { BackendRuntimeEmbeddingJob } from '../../../core/backend-runtime';
 import { type Turn } from '../core';
 import {
   type ModelConditions,
   ModelInputType,
+  type PromptMessage,
   type PromptParams,
   type StreamObject,
 } from '../providers/types';
@@ -15,6 +17,10 @@ import { CapabilityRuntime } from './capability-runtime';
 import { ConversationHost } from './hosts/conversation-host';
 import { ImageResultHost } from './hosts/image-result-host';
 import { TurnPersistence } from './hosts/turn-persistence';
+import {
+  SelectedDocumentContext,
+  withSelectedDocumentContext,
+} from './selected-document-context';
 
 @Injectable()
 export class TurnOrchestrator {
@@ -23,7 +29,8 @@ export class TurnOrchestrator {
     private readonly runtime: CapabilityRuntime,
     private readonly imageResults: ImageResultHost,
     private readonly turnPersistence: TurnPersistence,
-    private readonly embeddings: BackendRuntimeEmbeddingJob
+    private readonly embeddings: BackendRuntimeEmbeddingJob,
+    private readonly selectedDocuments: SelectedDocumentContext
   ) {}
 
   private buildPromptParams(latestTurn?: Turn): Record<string, unknown> {
@@ -36,6 +43,7 @@ export class TurnOrchestrator {
     query: Record<string, string | string[]>,
     selection: {
       responseMode: 'text' | 'object' | 'image';
+      signal?: AbortSignal;
     }
   ) {
     const prepared = await this.conversations.prepareTurn(
@@ -54,19 +62,43 @@ export class TurnOrchestrator {
     } = ChatQuerySchema.parse(query);
     const promptParams = this.buildPromptParams(prepared.latestTurn);
     const scope = prepared.latestTurn?.scopeSnapshot?.retrieval;
+    let selectedContext: PromptMessage | undefined;
     if (scope?.mode === 'required' && scope.requiredDocIds.length) {
-      await this.embeddings.prepareSelectedDocuments(
-        prepared.session.config.workspaceId,
-        scope.requiredDocIds
-      );
+      try {
+        await this.embeddings.prepareSelectedDocuments(
+          prepared.session.config.workspaceId,
+          scope.requiredDocIds
+        );
+      } catch (error) {
+        // Both text and stream-object are chat transports. Image generation,
+        // mixed file scopes, and pending/failed indexing retain their errors.
+        if (
+          !(error instanceof CopilotSelectedSourcesUnavailable) ||
+          selection.responseMode === 'image' ||
+          toolsConfig.readingDocs === false ||
+          scope.requiredArtifactIds.length
+        ) {
+          throw error;
+        }
+        selectedContext = await this.selectedDocuments.read(
+          userId,
+          prepared.session.config.workspaceId,
+          scope.requiredDocIds,
+          selection.signal
+        );
+      }
     }
-    const finalMessage = prepared.session.finish({
+    const diagnosticMessages = prepared.session.finish({
       ...prepared.params,
       ...promptParams,
     });
+    const finalMessage = selectedContext
+      ? withSelectedDocumentContext(diagnosticMessages, selectedContext)
+      : diagnosticMessages;
     return {
       prepared,
       finalMessage,
+      diagnosticMessages,
       selection: {
         model: profileId && modelId ? modelId : 'route-selected',
         conditions: { profileId, modelId },
@@ -106,9 +138,10 @@ export class TurnOrchestrator {
     signal?: AbortSignal,
     wasAborted: () => boolean = () => false
   ) {
-    const { prepared, finalMessage, selection } =
+    const { prepared, finalMessage, diagnosticMessages, selection } =
       await this.prepareChatSelection(userId, sessionId, query, {
         responseMode: 'text',
+        signal,
       });
 
     const stream = this.streamTextResult(
@@ -125,7 +158,8 @@ export class TurnOrchestrator {
     return {
       messageId: prepared.messageId,
       model: selection.model,
-      finalMessage,
+      // The controller includes this in error diagnostics. Do not log sources.
+      finalMessage: diagnosticMessages,
       stream,
     };
   }
@@ -156,15 +190,16 @@ export class TurnOrchestrator {
     signal?: AbortSignal,
     wasAborted: () => boolean = () => false
   ) {
-    const { prepared, finalMessage, selection } =
+    const { prepared, finalMessage, diagnosticMessages, selection } =
       await this.prepareChatSelection(userId, sessionId, query, {
         responseMode: 'object',
+        signal,
       });
 
     return {
       messageId: prepared.messageId,
       model: selection.model,
-      finalMessage,
+      finalMessage: diagnosticMessages,
       stream: this.streamObjectResult(
         prepared.session,
         selection.conditions,

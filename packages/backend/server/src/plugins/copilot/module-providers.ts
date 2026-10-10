@@ -35,6 +35,7 @@ import { ImageResultHost } from './runtime/hosts/image-result-host';
 import { ResponsePostprocessor } from './runtime/hosts/response-postprocessor';
 import { TurnPersistence } from './runtime/hosts/turn-persistence';
 import { PromptRuntime } from './runtime/prompt-runtime';
+import { SelectedDocumentContext } from './runtime/selected-document-context';
 import { ToolRuntime } from './runtime/tool-runtime';
 import { TurnOrchestrator } from './runtime/turn-orchestrator';
 import { ChatSessionService } from './session';
@@ -125,6 +126,7 @@ export const COPILOT_KERNEL_PROVIDERS = [
 
 export const COPILOT_FEATURE_PROVIDERS = [
   TurnOrchestrator,
+  SelectedDocumentContext,
   ...COPILOT_TRANSCRIPT_PROVIDERS,
   ...COPILOT_WORKSPACE_PROVIDERS,
   ...COPILOT_JOB_PROVIDERS,
