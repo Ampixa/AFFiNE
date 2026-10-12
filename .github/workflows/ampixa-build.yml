@@ -37,6 +37,11 @@ jobs:
           sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER USER postgres PASSWORD 'ci-fixture';"
           sudo -u postgres createdb affine_ci
           rustup show active-toolchain
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: ampixa-systemd-linux-x64
+          cache-on-failure: true
       - name: Test and build without Docker
         run: AFFINE_RELEASE_OUTPUT="$RUNNER_TEMP/affine-release" bash deploy/ampixa/ci/build.sh
       - name: Save release and build log

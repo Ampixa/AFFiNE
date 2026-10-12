@@ -101,7 +101,9 @@ recovery decision because subsequent writes may exist.
 This fork is public. Standard hosted runner execution is currently free under
 GitHub's public-repository policy. Larger runners are paid. Artifact storage has
 separate allowances; bundles/logs expire after **two days**. The pipeline does not
-increase storage budgets, create paid runners or use a build cache. Monitor the
+increase storage budgets or create paid runners. Rust dependency builds use
+a cache within the repository's existing allowance; PR caches remain scoped
+to their PR and cannot replace production-branch caches. Monitor the
 organization's storage usage and retain important releases in your own approved
 backup location when needed. Existing production backups are not auto-deleted.
 
