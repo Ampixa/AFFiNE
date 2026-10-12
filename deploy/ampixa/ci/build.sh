@@ -15,7 +15,7 @@ mkdir -p "$out"
 exec > >(tee "$out/build.log") 2>&1
 export HUSKY=0 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 ELECTRON_SKIP_BINARY_DOWNLOAD=1
 export SENTRYCLI_SKIP_DOWNLOAD=1 YARN_ENABLE_SCRIPTS=true BUILD_TYPE=stable
-export CARGO_BUILD_JOBS=2 RAYON_NUM_THREADS=2 NODE_OPTIONS=--max-old-space-size=6144
+export CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=2 NODE_OPTIONS=--max-old-space-size=6144
 export CC='clang -D_BSD_SOURCE' TARGET_CC='clang -D_BSD_SOURCE'
 corepack enable
 ./scripts/set-version.sh "$version"
