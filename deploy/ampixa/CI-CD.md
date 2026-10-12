@@ -39,11 +39,11 @@ container/mobile/cloud release workflows are separate from this pipeline.
 
 Configure these in repository **Settings → Environments → production**:
 
-| Secret | Value |
-| --- | --- |
-| `AFFINE_DEPLOY_HOST` | Production SSH hostname/IP |
-| `AFFINE_DEPLOY_USER` | Dedicated `affine-ci` account |
-| `AFFINE_DEPLOY_KEY` | Dedicated Ed25519 private key; never a personal SSH key |
+| Secret                      | Value                                                                               |
+| --------------------------- | ----------------------------------------------------------------------------------- |
+| `AFFINE_DEPLOY_HOST`        | Production SSH hostname/IP                                                          |
+| `AFFINE_DEPLOY_USER`        | Dedicated `affine-ci` account                                                       |
+| `AFFINE_DEPLOY_KEY`         | Dedicated Ed25519 private key; never a personal SSH key                             |
 | `AFFINE_DEPLOY_KNOWN_HOSTS` | Trusted server host-key entry verified through an existing authenticated connection |
 
 Keep IP addresses, private keys and provider keys out of source, artifacts and

@@ -299,25 +299,25 @@ test('same-column moves are no-ops and foreign rows or columns never write', asy
 for (const [label, configure, expected] of [
   [
     'filtered view',
-    (b: Y.Map<unknown>, v: Y.Map<unknown>) =>
+    (_b: Y.Map<unknown>, v: Y.Map<unknown>) =>
       v.set('filter', nested({ conditions: [{}] })),
     /FILTERED_BOARD/,
   ],
   [
     'hidden destination',
-    (b: Y.Map<unknown>, v: Y.Map<unknown>) =>
+    (_b: Y.Map<unknown>, v: Y.Map<unknown>) =>
       v.set('groupProperties', nested([{ key: 'todo', hide: true }])),
     /HIDDEN_COLUMN/,
   ],
   [
     'custom card heading',
-    (b: Y.Map<unknown>, v: Y.Map<unknown>) =>
+    (_b: Y.Map<unknown>, v: Y.Map<unknown>) =>
       v.set('header', nested({ titleColumn: 'status' })),
     /UNSUPPORTED_BOARD/,
   ],
   [
     'multi-select grouping',
-    (b: Y.Map<unknown>, v: Y.Map<unknown>) =>
+    (_b: Y.Map<unknown>, v: Y.Map<unknown>) =>
       v.set('groupBy', nested({ columnId: 'status', name: 'multi-select' })),
     /UNSUPPORTED_BOARD/,
   ],

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { request as httpRequest } from 'node:http';
 import test from 'node:test';
+
 import {
   ClaudeFiles,
   createGateway,
@@ -252,7 +253,7 @@ for (const [name, part] of Object.entries({
 test('file count, individual and total limits checked before uploads', async () => {
   const f = fixture();
   await assert.rejects(
-    f.client.request(input(Array(5).fill(file()))),
+    f.client.request(input(new Array(5).fill(file()))),
     /four files/
   );
   const large = Buffer.alloc(LIMITS.file + 1, 32);
@@ -263,7 +264,7 @@ test('file count, individual and total limits checked before uploads', async () 
   );
   const medium = large.subarray(0, 3 * 1024 * 1024);
   await assert.rejects(
-    f.client.request(input(Array(3).fill(file('application/pdf', medium)))),
+    f.client.request(input(new Array(3).fill(file('application/pdf', medium)))),
     /8 MiB/
   );
   assert.equal(f.calls.length, 0);

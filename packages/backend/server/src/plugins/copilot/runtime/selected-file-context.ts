@@ -172,7 +172,8 @@ export class SelectedFileContext {
     // using the bounded native object-storage read before accepting the bytes.
     for (const id of ids) {
       signal?.throwIfAborted();
-      const row = rows.find(row => row.id === id)!;
+      const row = rows.find(row => row.id === id);
+      if (!row) throw new CopilotSelectedSourcesUnavailable();
       const object = await this.storage.getObject(
         row.storageScope,
         row.storageKey,

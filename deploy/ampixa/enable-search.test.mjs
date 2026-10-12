@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import {
   chmod,
   mkdtemp,
-  readFile,
   readdir,
+  readFile,
   rm,
   stat,
   symlink,

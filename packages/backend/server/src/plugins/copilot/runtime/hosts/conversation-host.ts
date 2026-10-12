@@ -25,13 +25,13 @@ import {
   type SessionFocus,
   TurnScopeSnapshotSchema,
 } from '../contracts/shared';
-import { AttachmentAdmissionHost } from './attachment-admission';
 import {
   claudeFileProfile,
   FILE_BYTE_LIMIT,
   FILE_COUNT_LIMIT,
   FILE_TOTAL_BYTE_LIMIT,
 } from '../selected-file-context';
+import { AttachmentAdmissionHost } from './attachment-admission';
 
 export type PreparedConversationTurn = {
   messageId?: string;
