@@ -102,6 +102,7 @@ if find "$release" \( -name .env -o -name private.key -o -name '*.pem' \) | grep
 fi
 (cd "$release"; find . -type f ! -name FILES.sha256 -print0 | sort -z | xargs -0 sha256sum > FILES.sha256)
 archive="affine-${sha:0:12}-linux-x64.tar.gz"
-tar --owner=0 --group=0 -czf "$out/$archive" -C "$release" .
+tar --hard-dereference --owner=0 --group=0 -czf "$out/$archive" -C "$release" .
 (cd "$out"; sha256sum "$archive" > "$archive.sha256"; sha256sum -c "$archive.sha256")
+python3 deploy/ampixa/ci/safe_archive.py "$out/$archive"
 echo "Packaged $sha; no production deployment performed."
