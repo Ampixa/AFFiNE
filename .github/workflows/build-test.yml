@@ -11,7 +11,11 @@ on:
     paths-ignore:
       - README.md
   pull_request:
+    branches-ignore: [ampixa/selfhosted]
   merge_group:
+    branches-ignore: [ampixa/selfhosted]
+  # Full upstream coverage remains available for platform changes and upgrades.
+  workflow_dispatch:
 
 env:
   DEBUG: napi:*

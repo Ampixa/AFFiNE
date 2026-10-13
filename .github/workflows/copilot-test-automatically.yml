@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   dispatch-test:
+    if: github.repository != 'Ampixa/AFFiNE' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     name: Setup Test
     steps:

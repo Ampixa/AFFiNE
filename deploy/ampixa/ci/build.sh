@@ -19,9 +19,13 @@ export SENTRYCLI_SKIP_DOWNLOAD=1 YARN_ENABLE_SCRIPTS=true BUILD_TYPE=stable
 export CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=2 NODE_OPTIONS=--max-old-space-size=6144
 export CC='clang -D_BSD_SOURCE' TARGET_CC='clang -D_BSD_SOURCE'
 corepack enable
+yarn install --immutable --inline-builds
+# One validation path for the self-hosted web release, before version overlays.
+yarn lint:ox
+yarn lint:format
+yarn typecheck
 ./scripts/set-version.sh "$version"
 git diff --binary > "$out/version-overlay.patch"
-yarn install --immutable --inline-builds
 yarn workspace @affine/server-native build --target x86_64-unknown-linux-gnu
 mv packages/backend/native/server-native.node packages/backend/native/server-native.x64.node
 for package in @affine/web @affine/admin @affine/mobile; do yarn affine "$package" build; done
@@ -37,6 +41,9 @@ yarn workspace @affine/server build
 if grep -Eq 'ERROR in |compiled with [1-9][0-9]* errors' "$out/build.log"; then
   echo 'Bundler reported errors'; exit 1
 fi
+yarn vitest run --maxWorkers=2 \
+  packages/frontend/core/src/blocksuite/ai/messages/error.spec.ts \
+  packages/frontend/core/src/blocksuite/ai/runtime/request/copilot-client.spec.ts
 node deploy/ampixa/ci/verify-native.cjs packages/backend/server/dist/server-native.x64.node
 node --test deploy/ampixa/claude-files/gateway.test.mjs deploy/ampixa/enable-search.test.mjs
 node deploy/ampixa/claude-files/memory-smoke.mjs

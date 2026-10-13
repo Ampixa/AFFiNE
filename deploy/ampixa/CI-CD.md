@@ -8,6 +8,19 @@ automatically deploys that exact successful push build through restricted SSH.
 Neither production nor the builder requires Docker. The inherited upstream
 container/mobile/cloud release workflows are separate from this pipeline.
 
+Routine PRs and merges into `ampixa/selfhosted` use only the Ampixa release
+pipeline plus lightweight PR metadata checks. The inherited `Build & Test`
+matrix is excluded for this branch; it remains manually runnable for upstream
+upgrades or desktop/native mobile changes. Scheduled upstream Copilot evaluations
+are disabled in this fork (manual dispatch is still available).
+
+The release pipeline runs repository lint and type checking, the existing focused
+chat UI tests, gateway/search/file/MCP/Kanban tests, PostgreSQL search integration,
+and native/archive validation. It builds web, admin and mobile **web assets**
+because all three are served by the current bundle; it does not build Android,
+iOS or Electron apps. Browser feature acceptance remains manual. No new
+TypeScript spec files are needed for this scope.
+
 ## Gates and deployment behavior
 
 - `ampixa-build.yml`: Node/Rust versions come from the repository; the compatible
