@@ -471,6 +471,8 @@ jobs:
           yarn affine server genconfig
           git checkout packages/frontend/i18n/src/i18n-completenesses.json
           if git status --porcelain | grep -q .; then
+            git status --short
+            git diff --stat
             echo "Run 'yarn affine init && yarn affine gql build && yarn affine i18n build && yarn affine server genconfig' and make sure all changes are submitted"
             exit 1
           else

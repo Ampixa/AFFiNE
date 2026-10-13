@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run only in a disposable Linux x64 checkout; this reduces its dependency tree.
 set -Eeuo pipefail
+trap 'code=$?; printf "Build failed at line %s (exit %s): %s\n" "$LINENO" "$code" "$BASH_COMMAND" >&2; exit "$code"' ERR
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 [[ $(uname -sm) = 'Linux x86_64' ]]
@@ -58,9 +59,9 @@ git diff --exit-code -- Cargo.lock yarn.lock
 export YARN_ENABLE_SCRIPTS=false
 yarn workspaces focus @affine/server --production
 yarn workspace @affine/server prisma generate
-# Some Yarn versions leave workspace-local dependencies; reject rather than mix.
-test ! -d packages/backend/server/node_modules
-mv node_modules packages/backend/server/node_modules
+# AVA leaves a workspace-local cache; remove only that cache and reject real
+# unhoisted dependencies instead of silently nesting or overwriting them.
+python3 deploy/ampixa/ci/prepare_dependencies.py "$root"
 release="$out/release"
 mkdir "$release"
 cp -a packages/backend/server "$release/app"

@@ -1484,6 +1484,22 @@
         }
       }
     },
+    "copilotSelfHosted": {
+      "type": "object",
+      "description": "Configuration for copilotSelfHosted module",
+      "properties": {
+        "documentSearchFallback": {
+          "type": "boolean",
+          "description": "Use bounded in-process document keyword search when indexed retrieval is unavailable. No attachment extraction or external service.\n@default false\n@environment `AFFINE_COPILOT_DOCUMENT_SEARCH_FALLBACK`",
+          "default": false
+        },
+        "disableReasoning": {
+          "type": "boolean",
+          "description": "Reject Extended Thinking before provider requests on installations whose chat gateway does not support reasoning.\n@default false\n@environment `AFFINE_COPILOT_DISABLE_REASONING`",
+          "default": false
+        }
+      }
+    },
     "indexer": {
       "type": "object",
       "description": "Configuration for indexer module",

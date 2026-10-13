@@ -13,7 +13,9 @@ container/mobile/cloud release workflows are separate from this pipeline.
 - `ampixa-build.yml`: Node/Rust versions come from the repository; the compatible
   application version remains 0.27.4. Native storage limits, gateway, selected
   context, document search and MCP/Kanban tests must pass. PostgreSQL runs locally
-  on the disposable runner. No real provider requests are made.
+  on the disposable runner. No real provider requests are made. Packaging removes
+  AVA's test cache before moving the focused runtime dependencies, and rejects
+  unexpected workspace-local runtime packages rather than overwriting them.
 - `ampixa-deploy.yml`: accepts only successful **push** builds of the expected
   workflow on the production branch. PR artifacts cannot deploy. Both GitHub
   and the server reject a SHA superseded by a newer merge.

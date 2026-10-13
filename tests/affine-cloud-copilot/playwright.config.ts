@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { testResultDir } from '@affine-test/kit/playwright';
@@ -9,6 +10,11 @@ import type {
 const runtimeConfigPath = fileURLToPath(
   new URL('./runtime-config.json', import.meta.url)
 );
+
+// One disposable key per test server; no production credential is needed.
+const testPrivateKey = generateKeyPairSync('ec', { namedCurve: 'P-256' })
+  .privateKey.export({ type: 'pkcs8', format: 'pem' })
+  .toString();
 
 const config: PlaywrightTestConfig = {
   testDir: './e2e',
@@ -57,6 +63,7 @@ const config: PlaywrightTestConfig = {
         NODE_ENV: 'test',
         AFFINE_ENV: process.env.AFFINE_ENV ?? 'dev',
         AFFINE_BACKEND_RUNTIME_CONFIG_PATH: runtimeConfigPath,
+        AFFINE_PRIVATE_KEY: testPrivateKey,
         DEBUG: 'affine:*',
         FORCE_COLOR: 'true',
         DEBUG_COLORS: 'true',

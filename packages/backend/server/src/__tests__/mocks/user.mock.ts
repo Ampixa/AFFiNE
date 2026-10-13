@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { faker } from '@faker-js/faker';
 import { hashSync } from '@node-rs/argon2';
 import type { Prisma, User } from '@prisma/client';
@@ -20,7 +22,7 @@ export class MockUser extends Mocker<MockUserInput, MockedUser> {
     const user = await this.db.user.create({
       data: {
         createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
-        email: faker.internet.email(),
+        email: `test-${randomUUID()}@example.com`,
         name: faker.person.fullName(),
         password: password ? hashSync(password) : undefined,
         ...userInput,

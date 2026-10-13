@@ -1125,6 +1125,9 @@ test('should refresh user subscriptions (empty / revenuecat / stripe-only)', asy
     emailVerified: true,
   };
 
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+
   // prepare mocks:
   // first call returns Pro subscription
   // second call returns AI subscription.
@@ -1134,8 +1137,8 @@ test('should refresh user subscriptions (empty / revenuecat / stripe-only)', asy
         identifier: 'Pro',
         isTrial: false,
         isActive: true,
-        latestPurchaseDate: new Date('2025-09-01T00:00:00.000Z'),
-        expirationDate: new Date('2026-09-01T00:00:00.000Z'),
+        latestPurchaseDate: new Date(now - day),
+        expirationDate: new Date(now + 365 * day),
         productId: 'app.affine.pro.Annual',
         store: 'app_store',
         willRenew: true,
@@ -1147,8 +1150,8 @@ test('should refresh user subscriptions (empty / revenuecat / stripe-only)', asy
         identifier: 'AI',
         isTrial: false,
         isActive: true,
-        latestPurchaseDate: new Date('2025-09-02T00:00:00.000Z'),
-        expirationDate: new Date('2026-09-02T00:00:00.000Z'),
+        latestPurchaseDate: new Date(now - day),
+        expirationDate: new Date(now + 365 * day),
         productId: 'app.affine.pro.ai.Annual',
         store: 'play_store',
         willRenew: true,
