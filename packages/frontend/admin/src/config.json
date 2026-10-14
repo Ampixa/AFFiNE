@@ -398,6 +398,18 @@
       "desc": "Whether workspace BYOK custom endpoints may resolve to private network targets. Enabling this allows workspace owners and admins to send provider probe requests to the private network."
     }
   },
+  "copilotSelfHosted": {
+    "documentSearchFallback": {
+      "type": "Boolean",
+      "desc": "Use bounded in-process document keyword search when indexed retrieval is unavailable. No attachment extraction or external service.",
+      "env": "AFFINE_COPILOT_DOCUMENT_SEARCH_FALLBACK"
+    },
+    "disableReasoning": {
+      "type": "Boolean",
+      "desc": "Reject Extended Thinking before provider requests on installations whose chat gateway does not support reasoning.",
+      "env": "AFFINE_COPILOT_DISABLE_REASONING"
+    }
+  },
   "indexer": {
     "enabled": {
       "type": "Boolean",

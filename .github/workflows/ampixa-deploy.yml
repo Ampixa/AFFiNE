@@ -1,0 +1,79 @@
+name: Ampixa production deploy
+on:
+  workflow_run:
+    workflows: [Ampixa systemd build]
+    types: [completed]
+    branches: [ampixa/selfhosted]
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful Ampixa systemd build run ID on ampixa/selfhosted
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ampixa-production
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.repository == 'Ampixa/AFFiNE' && github.ref == 'refs/heads/ampixa/selfhosted' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.build.outputs.sha }}
+    steps:
+      - name: Validate successful trusted build and current branch
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.build_run_id }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ $RUN_ID =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID" > run.json
+          jq -e '.conclusion == "success" and .event == "push" and .head_branch == "ampixa/selfhosted" and .path == ".github/workflows/ampixa-build.yml"' run.json
+          sha=$(jq -r .head_sha run.json)
+          current=$(gh api "repos/$GH_REPO/git/ref/heads/ampixa/selfhosted" --jq .object.sha)
+          [[ $sha = "$current" ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+  deploy:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    env:
+      RELEASE_SHA: ${{ needs.verify.outputs.sha }}
+    steps:
+      - name: Download the verified build artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ampixa-systemd-${{ needs.verify.outputs.sha }}
+          run-id: ${{ github.event.workflow_run.id || inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: release
+      - name: Deploy through restricted SSH receiver
+        env:
+          DEPLOY_HOST: ${{ secrets.AFFINE_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.AFFINE_DEPLOY_USER }}
+          DEPLOY_KEY: ${{ secrets.AFFINE_DEPLOY_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.AFFINE_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key=$(mktemp)
+          known=$(mktemp)
+          trap 'rm -f "$key" "$known"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$known"
+          cd release
+          file="affine-${RELEASE_SHA:0:12}-linux-x64.tar.gz"
+          sha256sum -c "$file.sha256"
+          checksum=$(sha256sum "$file" | cut -d ' ' -f1)
+          # The endpoint accepts only this deployment command; no interactive shell.
+          ssh -T -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$known" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "deploy $RELEASE_SHA $checksum" < "$file"

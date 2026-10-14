@@ -1,0 +1,65 @@
+name: Ampixa systemd build
+on:
+  push:
+    branches: [ampixa/selfhosted]
+  pull_request:
+    branches: [ampixa/selfhosted]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ampixa-build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    if: github.repository == 'Ampixa/AFFiNE'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      AFFINE_RELEASE_VERSION: '0.27.4'
+      LOCAL_SEARCH_TEST_DATABASE_URL: postgresql://postgres:ci-fixture@127.0.0.1:5432/affine_ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - name: Validate release scripts
+        run: |
+          for file in deploy/ampixa/ci/*.sh; do bash -n "$file"; done
+          python3 -m unittest discover -s deploy/ampixa/ci -p 'test_*.py' -v
+      - name: Install native prerequisites and disposable database
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev build-essential pkg-config libssl-dev protobuf-compiler jq postgresql
+          sudo systemctl start postgresql
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER USER postgres PASSWORD 'ci-fixture';"
+          sudo -u postgres createdb affine_ci
+          rustup show active-toolchain
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: ampixa-systemd-linux-x64
+          cache-on-failure: true
+      - name: Test and build without Docker
+        run: AFFINE_RELEASE_OUTPUT="$RUNNER_TEMP/affine-release" bash deploy/ampixa/ci/build.sh
+      - name: Save release and build log
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ampixa-systemd-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/affine-release/*.tar.gz
+            ${{ runner.temp }}/affine-release/*.sha256
+            ${{ runner.temp }}/affine-release/build.log
+          retention-days: 2
+          compression-level: 0
+          if-no-files-found: error
+      - name: Save failed build log
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ampixa-failed-build-${{ github.run_id }}
+          path: ${{ runner.temp }}/affine-release/build.log
+          retention-days: 2
+          if-no-files-found: ignore

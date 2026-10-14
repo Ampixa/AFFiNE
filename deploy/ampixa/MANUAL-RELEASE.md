@@ -8,6 +8,9 @@ The inherited upstream release workflows publish upstream images and target
 upstream infrastructure. They are not an AWS deployment pipeline for this fork.
 Do not dispatch them as a shortcut for this procedure.
 
+For Docker-free automatic builds and deployments after merge, see
+[CI-CD.md](CI-CD.md). This manual procedure remains a fallback.
+
 ## 1. Record the release and inspect the host
 
 Choose one reviewed commit from `ampixa/selfhosted`. Record its full SHA, the

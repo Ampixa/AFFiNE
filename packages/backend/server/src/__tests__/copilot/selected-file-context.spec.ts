@@ -7,14 +7,14 @@ import {
   CopilotSelectedSourcesLimitExceeded,
   CopilotSelectedSourcesUnavailable,
 } from '../../base';
+import type { PromptMessage } from '../../plugins/copilot/providers/types';
+import { AttachmentAdmissionHost } from '../../plugins/copilot/runtime/hosts/attachment-admission';
 import {
   claudeFileProfile,
   FILE_BYTE_LIMIT,
   SelectedFileContext,
   withSelectedFileContext,
 } from '../../plugins/copilot/runtime/selected-file-context';
-import { AttachmentAdmissionHost } from '../../plugins/copilot/runtime/hosts/attachment-admission';
-import type { PromptMessage } from '../../plugins/copilot/providers/types';
 
 type Dependencies = ConstructorParameters<typeof SelectedFileContext>;
 function fixture() {

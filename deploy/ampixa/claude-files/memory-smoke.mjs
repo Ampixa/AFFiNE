@@ -71,7 +71,7 @@ if (process.argv[2] === 'child') {
       },
       body,
     });
-    if (response.status !== 200) throw Error(await response.text());
+    if (response.status !== 200) throw new Error(await response.text());
     await response.text();
   }
   child.send('done');
