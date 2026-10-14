@@ -325,7 +325,7 @@ export class WorkspaceMcpProvider {
         name: 'create_document',
         title: 'Create Document',
         description:
-          'Create a new document in the workspace with the given title and markdown content. Returns the ID of the created document. Does not insert databases or images. For tasks on an existing Kanban board, use create_kanban_task.',
+          'Create a new document in the workspace with the given title and markdown content. Returns the ID of the created document. Supports Markdown pipe tables with a header and separator row; these become editable simple tables, not database views. Does not insert databases or images. For tasks on an existing Kanban board, use create_kanban_task.',
         parser: z.object({
           title: z.string().min(1),
           content: z.string(),
@@ -387,7 +387,7 @@ export class WorkspaceMcpProvider {
         name: 'update_document',
         title: 'Update Document',
         description:
-          'Update an existing document with new markdown content (body only). Uses structural diffing to apply minimal changes, preserving document history and enabling real-time collaboration. This does NOT update the document title, databases, or images. Use create_kanban_task or move_kanban_task for Kanban cards.',
+          'Update an existing document with new markdown content (body only). Uses structural diffing to apply minimal changes, preserving document history and enabling real-time collaboration. Supports editable simple tables written as Markdown pipe tables with a header and separator row. This does NOT update the document title, databases, or images. Use create_kanban_task or move_kanban_task for Kanban cards.',
         parser: z.object({
           docId: z.string(),
           content: z.string(),
