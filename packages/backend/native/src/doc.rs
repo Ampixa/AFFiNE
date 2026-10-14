@@ -353,7 +353,10 @@ pub fn create_doc_with_markdown(title: String, markdown: String, doc_id: String)
     doc_loader::build_full_doc(&title, &markdown, &doc_id),
     Status::GenericFailure,
   )?;
-  Ok(Buffer::from(result))
+  Ok(Buffer::from(map_napi_err(
+    crate::doc_tables::editable_tables(None, &result),
+    Status::GenericFailure,
+  )?))
 }
 
 /// Updates an existing document with new markdown content.
@@ -372,7 +375,10 @@ pub fn update_doc_with_markdown(existing_binary: Buffer, new_markdown: String, d
     doc_loader::update_doc(&existing_binary, &new_markdown, &doc_id),
     Status::GenericFailure,
   )?;
-  Ok(Buffer::from(result))
+  Ok(Buffer::from(map_napi_err(
+    crate::doc_tables::editable_tables(Some(&existing_binary), &result),
+    Status::GenericFailure,
+  )?))
 }
 
 /// Updates a document's title without touching content blocks.

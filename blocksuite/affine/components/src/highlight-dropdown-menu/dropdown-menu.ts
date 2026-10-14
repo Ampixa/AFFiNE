@@ -65,7 +65,7 @@ export class HighlightDropdownMenu extends LitElement {
         `}
       >
         <div data-size="large" data-orientation="vertical">
-          <div class="highlight-heading">Color</div>
+          <div class="highlight-heading">Text color</div>
           ${repeat(colors, color => {
             const isDefault = color === 'default';
             const value = isDefault
@@ -88,7 +88,12 @@ export class HighlightDropdownMenu extends LitElement {
             `;
           })}
 
-          <div class="highlight-heading">Background</div>
+          <div
+            class="highlight-heading"
+            title="Saved in the document and visible to other readers"
+          >
+            Text highlight
+          </div>
           ${repeat(colors, color => {
             const isDefault = color === 'default';
             const value = isDefault ? null : `var(${prefix}-${color})`;

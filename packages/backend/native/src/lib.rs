@@ -4,6 +4,7 @@ pub mod auth_session;
 pub mod content_policy;
 pub mod doc;
 pub mod doc_loader;
+mod doc_tables;
 pub mod entitlement;
 pub mod file_type;
 pub mod hashcash;

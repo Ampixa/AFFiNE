@@ -14,7 +14,7 @@ export const latexSlashMenuConfig: SlashMenuConfig = {
     {
       name: 'Inline equation',
       group: '0_Basic@8',
-      description: 'Create a inline equation.',
+      description: 'Add an inline formula, superscript, or subscript.',
       icon: TeXIcon(),
       tooltip: {
         figure: LatexTooltip(
@@ -24,7 +24,14 @@ export const latexSlashMenuConfig: SlashMenuConfig = {
         ),
         caption: 'Inline equation',
       },
-      searchAlias: ['inlineMath, inlineEquation', 'inlineLatex'],
+      searchAlias: [
+        'inlineMath',
+        'inlineEquation',
+        'inlineLatex',
+        'superscript',
+        'subscript',
+        'scientific notation',
+      ],
       action: ({ std }) => {
         std.command
           .chain()
@@ -35,17 +42,23 @@ export const latexSlashMenuConfig: SlashMenuConfig = {
     },
     {
       name: 'Equation',
-      description: 'Create a equation block.',
+      description: 'Add a display equation using LaTeX.',
       icon: TeXIcon(),
       tooltip: {
         figure: LatexTooltip(
-          'Create a equation via LaTeX.',
+          'Create an equation with LaTeX.',
           String.raw`\frac{a}{b} \pm \frac{c}{d} = \frac{ad \pm bc}{bd}`,
           true
         ),
         caption: 'Equation',
       },
-      searchAlias: ['mathBlock, equationBlock', 'latexBlock'],
+      searchAlias: [
+        'mathBlock',
+        'equationBlock',
+        'latexBlock',
+        'formula',
+        'math',
+      ],
       group: '4_Content & Media@10',
       action: ({ std }) => {
         std.command
