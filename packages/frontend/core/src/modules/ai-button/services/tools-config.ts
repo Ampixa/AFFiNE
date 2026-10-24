@@ -12,6 +12,9 @@ const AI_TOOLS_CONFIG_KEY = 'AIToolsConfig';
 export interface AIToolsConfig {
   searchWorkspace?: boolean;
   readingDocs?: boolean;
+  // Ephemeral composer scope; never persisted by AIToolsConfigService.
+  writableDocIds?: string[];
+  allowDocCreate?: boolean;
 }
 
 export class AIToolsConfigService extends Service {

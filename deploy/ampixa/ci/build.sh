@@ -43,6 +43,7 @@ if grep -Eq 'ERROR in |compiled with [1-9][0-9]* errors' "$out/build.log"; then
 fi
 yarn vitest run --maxWorkers=2 \
   packages/frontend/core/src/blocksuite/ai/messages/error.spec.ts \
+  packages/frontend/core/src/blocksuite/ai/components/ai-tools/doc-write.spec.ts \
   packages/frontend/core/src/blocksuite/ai/runtime/request/copilot-client.spec.ts
 node deploy/ampixa/ci/verify-native.cjs packages/backend/server/dist/server-native.x64.node
 node --test deploy/ampixa/claude-files/gateway.test.mjs deploy/ampixa/enable-search.test.mjs
@@ -51,6 +52,7 @@ node deploy/ampixa/claude-files/memory-smoke.mjs
   cd packages/backend/server
   NODE_OPTIONS="--import=$root/tools/cli/register.js" yarn test \
     src/__tests__/copilot/local-document-search.spec.ts \
+    src/__tests__/copilot/document-editing.spec.ts \
     src/__tests__/copilot/local-search-postgres.spec.ts \
     src/__tests__/copilot/mcp-search.spec.ts \
     src/__tests__/copilot/capability-runtime.spec.ts \

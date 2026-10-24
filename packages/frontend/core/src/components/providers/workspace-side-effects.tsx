@@ -14,6 +14,7 @@ import { OverCapacityNotification } from '@affine/core/components/over-capacity'
 import {
   AuthService,
   EventSourceService,
+  FetchService,
   GraphQLService,
   RealtimeService,
 } from '@affine/core/modules/cloud';
@@ -140,6 +141,7 @@ export const WorkspaceSideEffects = () => {
     };
   }, [workspaceDialogService]);
 
+  const fetchService = useService(FetchService);
   const graphqlService = useService(GraphQLService);
   const eventSourceService = useService(EventSourceService);
   const authService = useService(AuthService);
@@ -181,7 +183,8 @@ export const WorkspaceSideEffects = () => {
               currentWorkspace.engine.doc.waitForSynced(docId)
             )
           );
-        }
+        },
+        fetchService.fetch
       ),
       globalDialogService,
       authService
@@ -194,6 +197,7 @@ export const WorkspaceSideEffects = () => {
     currentWorkspace.id,
     eventSourceService,
     nbstoreService,
+    fetchService,
     graphqlService,
     globalDialogService,
     authService,

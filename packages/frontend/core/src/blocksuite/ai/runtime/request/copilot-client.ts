@@ -1,5 +1,6 @@
 import { showAILoginRequiredAtom } from '@affine/core/components/affine/auth/ai-login-required';
 import type { AIToolsConfig } from '@affine/core/modules/ai-button';
+import type { FetchService } from '@affine/core/modules/cloud';
 import type { NbstoreService } from '@affine/core/modules/storage';
 import { UserFriendlyError } from '@affine/error';
 import {
@@ -107,8 +108,46 @@ export class CopilotClient {
       url: string,
       eventSourceInitDict?: EventSourceInit
     ) => EventSource,
-    readonly realtime?: Pick<NbstoreService['realtime'], 'request'>
+    readonly realtime?: Pick<NbstoreService['realtime'], 'request'>,
+    readonly fetch?: FetchService['fetch']
   ) {}
+
+  async decideDocumentEdit(
+    proposalId: string,
+    decision: 'apply' | 'cancel' | 'status'
+  ) {
+    if (!this.fetch)
+      throw new Error('Document editing is unavailable in this client.');
+    const response = await this.fetch(
+      `/api/copilot/document-edits/${encodeURIComponent(proposalId)}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-affine-document-edit': '1',
+        },
+        body: JSON.stringify({ decision }),
+      }
+    );
+    const result: unknown = await response.json();
+    if (
+      !response.ok ||
+      !result ||
+      typeof result !== 'object' ||
+      !('status' in result) ||
+      !['applied', 'cancelled', 'proposed', 'uncertain'].includes(
+        String(result.status)
+      )
+    ) {
+      throw new Error(
+        'Could not verify the document action. Check the document before trying again.'
+      );
+    }
+    return result as {
+      status: 'applied' | 'cancelled' | 'proposed' | 'uncertain';
+      docId?: string;
+    };
+  }
 
   async createSession(
     options: OptionsField<typeof createCopilotSessionMutation>

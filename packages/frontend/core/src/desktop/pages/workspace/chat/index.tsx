@@ -24,6 +24,7 @@ import {
 } from '@affine/core/modules/ai-button';
 import {
   EventSourceService,
+  FetchService,
   GraphQLService,
   ServerService,
   SubscriptionService,
@@ -54,6 +55,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as styles from './index.css';
 
 function useAIRequestService() {
+  const fetchService = useService(FetchService);
   const graphqlService = useService(GraphQLService);
   const eventSourceService = useService(EventSourceService);
   const nbstoreService = useService(NbstoreService);
@@ -71,9 +73,16 @@ function useAIRequestService() {
               workspace.engine.doc.waitForSynced(docId)
             )
           );
-        }
+        },
+        fetchService.fetch
       ),
-    [graphqlService, eventSourceService, nbstoreService, workspace]
+    [
+      graphqlService,
+      eventSourceService,
+      nbstoreService,
+      workspace,
+      fetchService,
+    ]
   );
 }
 

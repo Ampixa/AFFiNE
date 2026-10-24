@@ -1,15 +1,19 @@
 import {
   BeforeApplicationShutdown,
+  Body,
   Controller,
   Get,
+  Headers,
   Logger,
   Param,
+  Post,
   Query,
   Req,
   Res,
   Sse,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import createHttpError from 'http-errors';
 import {
   BehaviorSubject,
   catchError,
@@ -25,6 +29,7 @@ import {
   take,
   takeUntil,
 } from 'rxjs';
+import { z } from 'zod';
 
 import {
   applyAttachHeaders,
@@ -37,6 +42,7 @@ import {
 } from '../../base';
 import { CurrentUser, Public } from '../../core/auth';
 import { CopilotEnabled } from './feature';
+import { DocumentEditing } from './runtime/document-editing';
 import {
   ActionStreamHost,
   projectActionEventToChatEvent,
@@ -63,8 +69,32 @@ export class CopilotController implements BeforeApplicationShutdown {
     private readonly config: Config,
     private readonly orchestrator: TurnOrchestrator,
     private readonly actionStreams: ActionStreamHost,
-    private readonly storage: CopilotStorage
+    private readonly storage: CopilotStorage,
+    private readonly documentEditing: DocumentEditing
   ) {}
+
+  @Post('/document-edits/:proposalId')
+  async decideDocumentEdit(
+    @CurrentUser() user: CurrentUser,
+    @Param('proposalId') proposalId: string,
+    @Headers('x-affine-document-edit') header: string,
+    @Body() body: unknown
+  ) {
+    // Require a non-simple request; form submissions cannot apply proposals.
+    if (header !== '1')
+      throw createHttpError(400, 'Missing document edit request header.');
+    const parsed = z
+      .object({ decision: z.enum(['apply', 'cancel', 'status']) })
+      .strict()
+      .safeParse(body);
+    if (!parsed.success || !z.string().uuid().safeParse(proposalId).success)
+      throw createHttpError(400, 'Invalid document edit request.');
+    return this.documentEditing.decide(
+      user.id,
+      proposalId,
+      parsed.data.decision
+    );
+  }
 
   async beforeApplicationShutdown() {
     await lastValueFrom(

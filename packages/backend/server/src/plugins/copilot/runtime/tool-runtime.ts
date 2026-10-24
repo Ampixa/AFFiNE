@@ -2,7 +2,7 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
 
 import { Config } from '../../../base';
-import { DocReader, DocWriter } from '../../../core/doc';
+import { DocReader } from '../../../core/doc';
 import { PermissionAccess } from '../../../core/permission';
 import { Models } from '../../../models';
 import { DelegatedEditorService } from '../delegated/service';
@@ -15,10 +15,7 @@ import { DocumentRetrievalService } from '../retrieval/document';
 import {
   buildDocCanvasGetter,
   buildDocContentGetter,
-  buildDocCreateHandler,
   buildDocumentSearch,
-  buildDocUpdateHandler,
-  buildDocUpdateMetaHandler,
   type CopilotTool,
   type CopilotToolSet,
   createArtifactReadTool,
@@ -40,6 +37,7 @@ import {
   createFrontendSnapshotTool,
   createSectionEditTool,
 } from '../tools';
+import { DocumentEditing } from './document-editing';
 import { PromptRuntime } from './prompt-runtime';
 
 export type ProviderSpecificToolResolver = (
@@ -53,13 +51,13 @@ export class ToolRuntime {
     private readonly config: Config,
     private readonly ac: PermissionAccess,
     private readonly docReader: DocReader,
-    private readonly docWriter: DocWriter,
     private readonly models: Models,
     @Inject(forwardRef(() => PromptRuntime))
     private readonly promptRuntime: Pick<PromptRuntime, 'runText'>,
     private readonly retrieval: DocumentRetrievalService,
     private readonly artifactRetrieval: ArtifactRetrievalService,
-    private readonly delegated: DelegatedEditorService
+    private readonly delegated: DelegatedEditorService,
+    private readonly documentEditing: DocumentEditing
   ) {}
 
   async getTools(
@@ -96,18 +94,58 @@ export class ToolRuntime {
         : undefined;
 
     for (const tool of options.tools) {
+      if (['docCreate', 'docUpdate', 'docUpdateMeta'].includes(tool)) {
+        if (options.documentEditScope) {
+          if (tool === 'docCreate' && options.documentEditScope.allowCreate) {
+            tools.doc_create = createDocCreateTool((title, content) =>
+              this.documentEditing.propose(options, {
+                operation: 'create',
+                title,
+                content,
+              })
+            );
+          } else if (
+            tool === 'docUpdate' &&
+            options.documentEditScope.documents.length
+          ) {
+            tools.doc_update = createDocUpdateTool((docId, content) =>
+              this.documentEditing.propose(options, {
+                operation: 'update',
+                docId,
+                content,
+              })
+            );
+          } else if (
+            tool === 'docUpdateMeta' &&
+            options.documentEditScope.documents.length
+          ) {
+            tools.doc_update_meta = createDocUpdateMetaTool((docId, title) =>
+              this.documentEditing.propose(options, {
+                operation: 'rename',
+                docId,
+                title,
+              })
+            );
+          }
+          const name =
+            tool === 'docCreate'
+              ? 'doc_create'
+              : tool === 'docUpdate'
+                ? 'doc_update'
+                : 'doc_update_meta';
+          if (tools[name])
+            tools[name].description =
+              'Propose a document change for user review. This does NOT save anything. The user must Apply the preview. ' +
+              tools[name].description;
+        }
+        // Never fall through to immediate writes, including dev/canary/browser retries.
+        continue;
+      }
       const toolDef = resolveProviderSpecificTool?.(tool, model);
       if (toolDef) {
         if (toolDef[1]) {
           tools[toolDef[0]] = toolDef[1];
         }
-        continue;
-      }
-
-      if (
-        !(env.dev || env.namespaces.canary) &&
-        ['docCreate', 'docUpdate', 'docUpdateMeta'].includes(tool)
-      ) {
         continue;
       }
 
@@ -199,26 +237,6 @@ export class ToolRuntime {
               options
             );
           }
-          break;
-        }
-        case 'docCreate': {
-          const createDoc = buildDocCreateHandler(this.ac, this.docWriter);
-          tools.doc_create = createDocCreateTool(createDoc.bind(null, options));
-          break;
-        }
-        case 'docUpdate': {
-          const updateDoc = buildDocUpdateHandler(this.ac, this.docWriter);
-          tools.doc_update = createDocUpdateTool(updateDoc.bind(null, options));
-          break;
-        }
-        case 'docUpdateMeta': {
-          const updateDocMeta = buildDocUpdateMetaHandler(
-            this.ac,
-            this.docWriter
-          );
-          tools.doc_update_meta = createDocUpdateMetaTool(
-            updateDocMeta.bind(null, options)
-          );
           break;
         }
         case 'webSearch': {

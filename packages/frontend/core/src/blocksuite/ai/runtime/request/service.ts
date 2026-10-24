@@ -1,3 +1,4 @@
+import type { FetchService } from '@affine/core/modules/cloud';
 import type { NbstoreService } from '@affine/core/modules/storage';
 import {
   type CopilotChatHistoryFragment,
@@ -362,10 +363,11 @@ export function createAIRequestService(
     eventSourceInitDict?: EventSourceInit
   ) => EventSource,
   realtime: Pick<NbstoreService['realtime'], 'request'>,
-  syncSelectedSources?: (docIds: string[]) => Promise<void>
+  syncSelectedSources?: (docIds: string[]) => Promise<void>,
+  fetch?: FetchService['fetch']
 ) {
   return new AIRequestService(
-    new CopilotClient(gql, eventSource, realtime),
+    new CopilotClient(gql, eventSource, realtime, fetch),
     syncSelectedSources
   );
 }

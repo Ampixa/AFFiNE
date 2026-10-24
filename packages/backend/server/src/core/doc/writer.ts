@@ -1,4 +1,7 @@
+import { createHash } from 'node:crypto';
+
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import createHttpError from 'http-errors';
 import { nanoid } from 'nanoid';
 
 import { EventBus } from '../../base';
@@ -11,6 +14,10 @@ import {
   updateRootDocMetaTitle,
 } from '../../native';
 import { PgWorkspaceDocStorageAdapter } from './adapters/workspace';
+
+export function documentRevision(doc: { timestamp: number; bin: Uint8Array }) {
+  return `${doc.timestamp}:${createHash('sha256').update(doc.bin).digest('hex')}`;
+}
 
 export interface CreateDocResult {
   docId: string;
@@ -107,6 +114,11 @@ export class DocWriter {
       [binary],
       editorId
     );
+    if (!rootTimestamp || !docTimestamp)
+      throw createHttpError(
+        409,
+        'The new document was not fully saved. Check the workspace before creating another copy.'
+      );
     this.emitDocUpdatesPushed({
       spaceId: workspaceId,
       docId,
@@ -150,7 +162,8 @@ export class DocWriter {
     workspaceId: string,
     docId: string,
     markdown: string,
-    editorId?: string
+    editorId?: string,
+    expectedRevision?: string
   ): Promise<UpdateDocResult> {
     this.logger.debug(
       `Updating doc ${docId} in workspace ${workspaceId} from markdown`
@@ -160,6 +173,15 @@ export class DocWriter {
     const existingDoc = await this.storage.getDoc(workspaceId, docId);
     if (!existingDoc?.bin) {
       throw new NotFoundException(`Document ${docId} not found`);
+    }
+    if (
+      expectedRevision !== undefined &&
+      documentRevision(existingDoc) !== expectedRevision
+    ) {
+      throw createHttpError(
+        409,
+        'This document changed after the preview was prepared. Request a new preview.'
+      );
     }
 
     // Compute delta update using structural diff
@@ -180,6 +202,11 @@ export class DocWriter {
       [delta],
       editorId
     );
+    if (!timestamp)
+      throw createHttpError(
+        409,
+        'The document update was not accepted. Check the document before requesting another preview.'
+      );
     this.emitDocUpdatesPushed({
       spaceId: workspaceId,
       docId,
@@ -210,7 +237,8 @@ export class DocWriter {
     workspaceId: string,
     docId: string,
     meta: { title?: string },
-    editorId?: string
+    editorId?: string,
+    expectedRevision?: string
   ): Promise<UpdateDocResult> {
     if (meta.title === undefined) {
       throw new Error('No metadata provided');
@@ -221,6 +249,15 @@ export class DocWriter {
     const existingDoc = await this.storage.getDoc(workspaceId, docId);
     if (!existingDoc?.bin) {
       throw new NotFoundException(`Document ${docId} not found`);
+    }
+    if (
+      expectedRevision !== undefined &&
+      documentRevision(existingDoc) !== expectedRevision
+    ) {
+      throw createHttpError(
+        409,
+        'This document changed after the preview was prepared. Request a new preview.'
+      );
     }
 
     const rootDoc = await this.storage.getDoc(workspaceId, workspaceId);
@@ -272,6 +309,11 @@ export class DocWriter {
       [titleUpdate],
       editorId
     );
+    if (!rootTimestamp || !docTimestamp)
+      throw createHttpError(
+        409,
+        'The title update was not fully accepted. Check the document before requesting another preview.'
+      );
     this.emitDocUpdatesPushed({
       spaceId: workspaceId,
       docId,
