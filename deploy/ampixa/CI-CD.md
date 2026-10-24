@@ -29,9 +29,9 @@ TypeScript spec files are needed for this scope.
   on the disposable runner. No real provider requests are made. Packaging removes
   AVA's test cache before moving the focused runtime dependencies, and rejects
   unexpected workspace-local runtime packages rather than overwriting them.
-- `ampixa-deploy.yml`: accepts only successful **push** builds of the expected
-  workflow on the production branch. PR artifacts cannot deploy. Both GitHub
-  and the server reject a SHA superseded by a newer merge.
+- `ampixa-deploy.yml`: accepts only successful **push** or **workflow_dispatch**
+  builds of the expected workflow on the production branch. PR artifacts cannot
+  deploy. Both GitHub and the server reject a SHA superseded by a newer merge.
 - Deployments are serialized, never canceled mid-switch. The host uses its
   installed trusted deployment helper rather than executing an uploaded shell
   script as root.
@@ -97,9 +97,15 @@ After merging, inspect **Actions → Ampixa systemd build**, followed by
 directory, with no runtime environment contents. Failed builds never deploy.
 
 To retry a transient deployment failure, manually dispatch the deploy workflow
-with the successful push-build run ID. It must still be the branch's current
-SHA and its artifact must not have expired. For an expired artifact, rerun the
-original push build, then deploy that successful run.
+with the successful production-branch build run ID. It must still be the branch's
+current SHA and its artifact must not have expired. For an expired artifact,
+rerun the original push build, then deploy that successful run.
+
+If Actions was disabled when a merge happened, enabling it does not replay the
+missing build. Run **Ampixa systemd build** with `ampixa/selfhosted` selected.
+Its successful completion can deploy automatically, subject to the same
+current-commit, artifact and production-environment checks. A manual build of
+another branch, a PR build or a superseded commit still cannot deploy.
 
 For a code-only rollback, connect as a production administrator:
 

@@ -32,12 +32,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          [[ $RUN_ID =~ ^[0-9]+$ ]]
+          [[ $RUN_ID =~ ^[0-9]+$ ]] || { echo 'Invalid build run ID'; exit 1; }
           gh api "repos/$GH_REPO/actions/runs/$RUN_ID" > run.json
-          jq -e '.conclusion == "success" and .event == "push" and .head_branch == "ampixa/selfhosted" and .path == ".github/workflows/ampixa-build.yml"' run.json
+          jq -e '.conclusion == "success" and (.event == "push" or .event == "workflow_dispatch") and .head_branch == "ampixa/selfhosted" and .path == ".github/workflows/ampixa-build.yml"' run.json
           sha=$(jq -r .head_sha run.json)
           current=$(gh api "repos/$GH_REPO/git/ref/heads/ampixa/selfhosted" --jq .object.sha)
-          [[ $sha = "$current" ]]
+          [[ $sha = "$current" ]] || { echo 'Build is not the current production commit'; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
   deploy:
     needs: verify
