@@ -32,7 +32,15 @@ const ToolsConfigSchema = z.preprocess(
     }
     return val || {};
   },
-  z.record(z.enum(['searchWorkspace', 'readingDocs']), z.boolean()).default({})
+  z
+    .object({
+      searchWorkspace: z.boolean().optional(),
+      readingDocs: z.boolean().optional(),
+      writableDocIds: z.array(z.string().min(1).max(256)).max(4).optional(),
+      allowDocCreate: z.boolean().optional(),
+    })
+    .strict()
+    .default({})
 );
 
 export type ToolsConfig = z.infer<typeof ToolsConfigSchema>;

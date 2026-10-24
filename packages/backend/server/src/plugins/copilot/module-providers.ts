@@ -28,6 +28,7 @@ import { LocalDocumentSearch } from './retrieval/local-document';
 import { ActionRuntimeBridge } from './runtime/action-runtime-bridge';
 import { CapabilityRuntime } from './runtime/capability-runtime';
 import { CopilotRuntimeEventConsumer } from './runtime/copilot-runtime-event-consumer';
+import { DocumentEditing } from './runtime/document-editing';
 import { ActionStreamHost } from './runtime/hosts/action-stream-host';
 import { AttachmentAdmissionHost } from './runtime/hosts/attachment-admission';
 import { AttachmentMaterializer } from './runtime/hosts/attachment-materializer';
@@ -83,6 +84,7 @@ export const COPILOT_RUNTIME_PROVIDERS = [
   CapabilityRuntime,
   { provide: EMBEDDING_RERANK_RUNTIME, useExisting: CapabilityRuntime },
   ToolRuntime,
+  DocumentEditing,
   AttachmentMaterializer,
   AttachmentAdmissionHost,
   ActionStreamHost,

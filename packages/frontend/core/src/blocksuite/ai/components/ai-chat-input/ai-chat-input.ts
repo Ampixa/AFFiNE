@@ -345,6 +345,12 @@ export class AIChatInput extends SignalWatcher(
   @property({ attribute: false })
   accessor runtimeSnapshot: AIChatSnapshot | null | undefined;
 
+  @state()
+  accessor writableDocIds: string[] = [];
+
+  @state()
+  accessor allowDocCreate = false;
+
   @query('image-preview-grid')
   accessor imagePreviewGrid: HTMLDivElement | null = null;
 
@@ -485,6 +491,26 @@ export class AIChatInput extends SignalWatcher(
   }
 
   protected override updated(changedProperties: PropertyValues<this>) {
+    const previous = changedProperties.get('runtimeSnapshot') as
+      | AIChatSnapshot
+      | undefined;
+    if (
+      changedProperties.has('workspaceId') ||
+      (previous?.activeTabId &&
+        previous.activeTabId !== this.runtimeSnapshot?.activeTabId)
+    ) {
+      this.writableDocIds = [];
+      this.allowDocCreate = false;
+    }
+    if (changedProperties.has('chips')) {
+      const selected = new Set(
+        this.chips
+          .filter(isDocChip)
+          .filter(chip => chip.state !== 'candidate')
+          .map(chip => chip.docId)
+      );
+      this.writableDocIds = this.writableDocIds.filter(id => selected.has(id));
+    }
     if (changedProperties.has('workspaceId')) {
       this.aiModelService.setScope(this.workspaceId, 'Chat With AFFiNE AI');
     }
@@ -649,6 +675,23 @@ export class AIChatInput extends SignalWatcher(
           .onExtendedThinkingChange=${this._toggleReasoning}
           .serverService=${this.serverService}
           .toolsConfigService=${this.aiToolsConfigService}
+          .editableDocuments=${this.chips
+            .filter(isDocChip)
+            .filter(chip => chip.state !== 'candidate')
+            .map(chip => ({
+              id: chip.docId,
+              title: this.docDisplayConfig.getTitle(chip.docId) || 'Untitled',
+            }))}
+          .writableDocIds=${this.writableDocIds}
+          .allowDocCreate=${this.allowDocCreate}
+          .onDocumentWriteChange=${(id: string, allowed: boolean) => {
+            this.writableDocIds = allowed
+              ? [...new Set([...this.writableDocIds, id])].slice(0, 4)
+              : this.writableDocIds.filter(value => value !== id);
+          }}
+          .onAllowDocCreateChange=${(allowed: boolean) => {
+            this.allowDocCreate = allowed;
+          }}
           .aiModelService=${this.aiModelService}
           .notificationService=${this.notificationService}
           .subscriptionService=${this.subscriptionService}
@@ -859,7 +902,16 @@ export class AIChatInput extends SignalWatcher(
       where: this.trackOptions?.where,
       control: this.trackOptions?.control,
       reasoning: this._isReasoningActive,
-      toolsConfig: this.aiToolsConfigService.config.value,
+      toolsConfig: {
+        ...this.aiToolsConfigService.config.value,
+        writableDocIds: this.writableDocIds.filter(id =>
+          this.chips.some(
+            chip =>
+              isDocChip(chip) && chip.state !== 'candidate' && chip.docId === id
+          )
+        ),
+        allowDocCreate: this.allowDocCreate,
+      },
       routeTargetId: this.aiModelService.modelId.value,
       userInfo: {
         userId: userInfo?.id,

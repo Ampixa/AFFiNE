@@ -88,6 +88,23 @@ export class ChatInputPreference extends SignalWatcher(
     }
   `;
 
+  @property({ attribute: false })
+  accessor editableDocuments: { id: string; title: string }[] = [];
+
+  @property({ attribute: false })
+  accessor writableDocIds: string[] = [];
+
+  @property({ attribute: false })
+  accessor allowDocCreate = false;
+
+  @property({ attribute: false })
+  accessor onDocumentWriteChange:
+    | ((id: string, allowed: boolean) => void)
+    | undefined;
+
+  @property({ attribute: false })
+  accessor onAllowDocCreateChange: ((allowed: boolean) => void) | undefined;
+
   // --------- extended thinking props start ---------
   @property({ attribute: false })
   accessor extendedThinking: boolean = false;
@@ -207,6 +224,30 @@ export class ChatInputPreference extends SignalWatcher(
             readingDocs: value,
           }),
         class: { 'preference-action': true },
+      })
+    );
+
+    const editingItems = [
+      menu.toggleSwitch({
+        name: 'Allow new document previews',
+        on: this.allowDocCreate,
+        onChange: (value: boolean) => this.onAllowDocCreateChange?.(value),
+        class: { 'preference-action': true },
+      }),
+      ...this.editableDocuments.map(doc =>
+        menu.toggleSwitch({
+          name: `Allow edits: ${doc.title}`,
+          on: this.writableDocIds.includes(doc.id),
+          onChange: (value: boolean) =>
+            this.onDocumentWriteChange?.(doc.id, value),
+          class: { 'preference-action': true },
+        })
+      ),
+    ];
+    preferenceItems.push(
+      menu.subMenu({
+        name: 'Document editing · review before saving',
+        options: { items: editingItems },
       })
     );
 

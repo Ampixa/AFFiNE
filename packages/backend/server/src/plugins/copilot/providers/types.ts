@@ -12,6 +12,7 @@ import {
   StreamObjectSchema,
 } from '../runtime/contracts/runtime-event-contract';
 import { RetrievalScopeSchema } from '../runtime/contracts/shared';
+import { DocumentEditScopeSchema } from '../runtime/document-edit-contract';
 
 // Owner map:
 // - provider/profile/config schemas in this file are backend host ingress.
@@ -286,6 +287,7 @@ const CopilotProviderOptionsSchema = z.object({
     ])
     .optional(),
   retrievalScope: RetrievalScopeSchema.optional(),
+  documentEditScope: DocumentEditScopeSchema.optional(),
 });
 
 export const CopilotChatOptionsSchema = CopilotProviderOptionsSchema.merge(

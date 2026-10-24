@@ -319,7 +319,10 @@ function orchestratorFixture(error?: Error) {
           { kind: 'bytes', data: 'YQ==', mimeType: 'application/pdf' },
         ],
       }),
-    } as unknown as SelectedFileContext
+    } as unknown as SelectedFileContext,
+    {
+      prepare: async () => undefined,
+    } as unknown as import('../../plugins/copilot/runtime/document-editing').DocumentEditing
   );
   return {
     ...f,

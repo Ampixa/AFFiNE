@@ -1255,7 +1255,8 @@ test('controller projects successful streams and preparation failures to SSE eve
     { copilot: { unsplash: {} } } as Config,
     orchestrator,
     actions,
-    {} as CopilotStorage
+    {} as CopilotStorage,
+    {} as import('../../plugins/copilot/runtime/document-editing').DocumentEditing
   );
 
   t.deepEqual(

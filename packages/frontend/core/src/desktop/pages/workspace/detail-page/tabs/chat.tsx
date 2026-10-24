@@ -29,6 +29,7 @@ import {
 } from '@affine/core/modules/ai-button';
 import {
   EventSourceService,
+  FetchService,
   GraphQLService,
   ServerService,
   SubscriptionService,
@@ -76,6 +77,7 @@ export const EditorChatPanel = ({
   onLoad,
 }: SidebarTabProps) => {
   const framework = useFramework();
+  const fetchService = useService(FetchService);
   const graphqlService = useService(GraphQLService);
   const eventSourceService = useService(EventSourceService);
   const nbstoreService = useService(NbstoreService);
@@ -121,9 +123,11 @@ export const EditorChatPanel = ({
               workspace.engine.doc.waitForSynced(docId)
             )
           );
-        }
+        },
+        fetchService.fetch
       ),
     [
+      fetchService,
       eventSourceService.eventSource,
       graphqlService.gql,
       nbstoreService,
