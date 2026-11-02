@@ -7,6 +7,7 @@ import { ExplorerNavigation } from '@affine/core/components/explorer/header/navi
 import type { ExplorerDisplayPreference } from '@affine/core/components/explorer/types';
 import { PageListNewPageButton } from '@affine/core/components/page-list/docs/page-list-new-page-button';
 import { WorkspaceDialogService } from '@affine/core/modules/dialogs';
+import { WorkspaceGraphButton } from '@affine/core/modules/doc-link/views/graph/workspace-graph-button';
 import { WorkbenchService } from '@affine/core/modules/workbench';
 import { WorkspaceService } from '@affine/core/modules/workspace';
 import { inferOpenMode } from '@affine/core/utils';
@@ -86,6 +87,7 @@ export const AllDocsHeader = ({
       <ExplorerNavigation active="docs" />
 
       <div className={styles.actions}>
+        <WorkspaceGraphButton />
         <ViewToggle view={view} onViewChange={onViewChange} />
         <ExplorerDisplayMenuButton
           menuProps={menuProps}

@@ -251,7 +251,7 @@ export class DocsSearchService extends Service {
     );
   }
 
-  watchRefsBySourceFrom(ids: string | string[]) {
+  watchRefsBySourceFrom(ids: string | string[], limit = Infinity) {
     const docIds = Array.isArray(ids) ? ids : [ids];
     if (docIds.length === 0) {
       return of(new Map<string, IndexedDocReference[]>());
@@ -282,7 +282,7 @@ export class DocsSearchService extends Service {
         {
           fields: ['docId', 'refDocId', 'ref'],
           pagination: {
-            limit: Infinity,
+            limit,
           },
         }
       )
