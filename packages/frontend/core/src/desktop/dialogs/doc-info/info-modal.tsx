@@ -15,6 +15,7 @@ import type {
   DatabaseValueCell,
 } from '@affine/core/modules/doc-info/types';
 import { DocLinksService } from '@affine/core/modules/doc-link';
+import { ConnectionsButton } from '@affine/core/modules/doc-link/views/graph/connections-button';
 import { GuardService } from '@affine/core/modules/permissions';
 import { WorkspacePropertyService } from '@affine/core/modules/workspace-property';
 import { useI18n } from '@affine/i18n';
@@ -163,6 +164,12 @@ export const InfoTable = ({
       </PropertyCollapsibleSection>
       <Divider size="thinner" />
       <DocDatabaseBacklinkInfo onChange={onBacklinkPropertyChange} />
+      <ConnectionsButton
+        docId={docId}
+        links={links ?? []}
+        backlinks={backlinks ?? []}
+        onNavigate={onClose}
+      />
       {backlinks && backlinks.length > 0 ? (
         <>
           <LinksRow
