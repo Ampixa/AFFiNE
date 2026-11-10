@@ -3,7 +3,7 @@ import test from 'ava';
 import * as Y from 'yjs';
 
 import type { EventBus, Mutex } from '../../base';
-import type { DocReader, DocWriter } from '../../core/doc';
+import type { DocReader, DocWriter, FolderService } from '../../core/doc';
 import type { PgWorkspaceDocStorageAdapter } from '../../core/doc/adapters/workspace';
 import { KanbanService } from '../../core/doc/kanban';
 import { KanbanDocument } from '../../core/doc/kanban-document';
@@ -424,7 +424,8 @@ function providerFixture(
             throw new Error('SECRET_BACKEND_DETAILS');
           },
         } as unknown as KanbanService)
-      : f.service
+      : f.service,
+    {} as FolderService
   );
   return { ...f, provider, permissionCalls };
 }

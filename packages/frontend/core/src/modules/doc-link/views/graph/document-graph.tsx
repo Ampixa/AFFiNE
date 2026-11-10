@@ -301,7 +301,9 @@ export function DocumentGraph({
                     aria-label={`Select ${node.title}`}
                     aria-pressed={active}
                     onClick={() => select(node.id)}
-                    onDoubleClick={() => onOpen?.(node.id)}
+                    onDoubleClick={() =>
+                      node.kind !== 'folder' && onOpen?.(node.id)
+                    }
                     onPointerDown={e => {
                       if (e.button !== 0 || gesture.current) return;
                       e.stopPropagation();
@@ -487,7 +489,7 @@ export function DocumentGraph({
                   </div>
                 )}
               </div>
-              {onOpen && (
+              {onOpen && current.kind !== 'folder' && (
                 <button className="dg-open" onClick={() => onOpen(current.id)}>
                   Open document <span>↗</span>
                 </button>

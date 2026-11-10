@@ -5,6 +5,7 @@ export type GraphDoc = {
   status?: string;
   updated?: string;
   summary?: string;
+  kind?: 'folder';
 };
 export type GraphEdge = { source: string; target: string };
 export function normalizeGraph(
@@ -47,4 +48,31 @@ export function neighborhood(id: string, edges: GraphEdge[]) {
           : []
     ),
   ]);
+}
+
+/** Sidebar folder rows (WorkspaceDB `folders` table) as graph nodes and edges. */
+export function folderGraph(
+  rows: { id: string; parentId?: string | null; type: string; data: string }[]
+) {
+  const node = (id: string) => `folder:${id}`; // keep folder ids apart from doc ids
+  const docs: GraphDoc[] = rows
+    .filter(row => row.type === 'folder')
+    .map(row => ({
+      id: node(row.id),
+      title: row.data || 'Untitled folder',
+      group: 'Folders',
+      kind: 'folder',
+    }));
+  // Links to missing folders or unreadable docs are dropped by normalizeGraph.
+  const edges: GraphEdge[] = rows.flatMap(row =>
+    row.parentId && (row.type === 'folder' || row.type === 'doc')
+      ? [
+          {
+            source: node(row.parentId),
+            target: row.type === 'folder' ? node(row.id) : row.data,
+          },
+        ]
+      : []
+  );
+  return { docs, edges };
 }
