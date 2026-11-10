@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import createHttpError from 'http-errors';
 import { nanoid } from 'nanoid';
+import * as Y from 'yjs';
 
 import { EventBus } from '../../base';
 import {
@@ -14,6 +15,11 @@ import {
   updateRootDocMetaTitle,
 } from '../../native';
 import { PgWorkspaceDocStorageAdapter } from './adapters/workspace';
+import {
+  appendDocMention,
+  applyKeepingMentions,
+  protectMentionLinks,
+} from './doc-mentions';
 
 export function documentRevision(doc: { timestamp: number; bin: Uint8Array }) {
   return `${doc.timestamp}:${createHash('sha256').update(doc.bin).digest('hex')}`;
@@ -88,7 +94,15 @@ export class DocWriter {
     );
 
     // Convert markdown to y-octo binary using the provided title
-    const binary = createDocWithMarkdown(title, markdown, docId);
+    const binary = applyKeepingMentions(
+      null,
+      createDocWithMarkdown(
+        title,
+        protectMentionLinks(markdown, workspaceId),
+        docId
+      ),
+      workspaceId
+    );
 
     // Prepare root doc update to register the new document
     const rootDocUpdate = addDocToRootDoc(rootDocBin, docId, title);
@@ -193,7 +207,15 @@ export class DocWriter {
           existingDoc.bin.byteOffset,
           existingDoc.bin.byteLength
         );
-    const delta = updateDocWithMarkdown(existingBinary, markdown, docId);
+    const delta = applyKeepingMentions(
+      existingBinary,
+      updateDocWithMarkdown(
+        existingBinary,
+        protectMentionLinks(markdown, workspaceId),
+        docId
+      ),
+      workspaceId
+    );
 
     // Push only the delta changes
     const timestamp = await this.storage.pushDocUpdates(
@@ -330,6 +352,62 @@ export class DocWriter {
     );
 
     return { success: true };
+  }
+
+  /**
+   * Nests `childDocId` under `parentDocId` in the sidebar by appending an
+   * `@` mention of the child to the parent's body. No-op if already mentioned.
+   */
+  async addDocMention(
+    workspaceId: string,
+    parentDocId: string,
+    childDocId: string,
+    editorId: string
+  ): Promise<{ added: boolean; blockId?: string }> {
+    const [parent, child] = await Promise.all([
+      this.storage.getDoc(workspaceId, parentDocId),
+      this.storage.getDoc(workspaceId, childDocId),
+    ]);
+    if (!parent?.bin)
+      throw new NotFoundException(`Document ${parentDocId} not found`);
+    if (!child?.bin)
+      throw new NotFoundException(`Document ${childDocId} not found`);
+
+    const doc = new Y.Doc();
+    try {
+      Y.applyUpdate(doc, parent.bin);
+      const before = Y.encodeStateVector(doc);
+      const result = appendDocMention(doc, childDocId, editorId);
+      if (!result.added) return result;
+      const update = Y.encodeStateAsUpdate(doc, before);
+      const timestamp = await this.storage.pushDocUpdates(
+        workspaceId,
+        parentDocId,
+        [update],
+        editorId
+      );
+      if (!timestamp)
+        throw createHttpError(
+          409,
+          'The document update was not accepted. Check the document before retrying.'
+        );
+      this.emitDocUpdatesPushed({
+        spaceId: workspaceId,
+        docId: parentDocId,
+        updates: [update],
+        timestamp,
+        editor: editorId,
+      });
+      await this.updateDocProperties(
+        workspaceId,
+        parentDocId,
+        { updatedBy: editorId },
+        editorId
+      );
+      return result;
+    } finally {
+      doc.destroy();
+    }
   }
 
   private emitDocUpdatesPushed(payload: {

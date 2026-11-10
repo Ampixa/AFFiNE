@@ -2,7 +2,12 @@ import test from 'ava';
 import * as Y from 'yjs';
 
 import type { Config } from '../../base';
-import type { DocReader, DocWriter, KanbanService } from '../../core/doc';
+import type {
+  DocReader,
+  DocWriter,
+  FolderService,
+  KanbanService,
+} from '../../core/doc';
 import type { PermissionAccess } from '../../core/permission';
 import type { Models } from '../../models';
 import { WorkspaceMcpProvider } from '../../plugins/copilot/mcp/provider';
@@ -371,7 +376,8 @@ test('MCP preserves local search scope and incomplete coverage', async t => {
     {} as DocReader,
     {} as DocWriter,
     retrieval,
-    {} as KanbanService
+    {} as KanbanService,
+    {} as FolderService
   );
   const server = await provider.for('user', 'workspace');
   const tool = server.tools.find(tool => tool.name === 'doc_search');
