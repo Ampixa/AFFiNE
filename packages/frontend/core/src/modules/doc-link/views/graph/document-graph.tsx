@@ -249,6 +249,9 @@ export function DocumentGraph({
         <div className="dg-canvas">
           <div className="dg-count" aria-live="polite">
             {visible.length} documents <span>·</span> {shownLinks.length} links
+            in view
+            {shownLinks.length !== links.length &&
+              ` · ${links.length} total links`}
             {truncated && ' · limited to 200 documents'}
           </div>
           <svg

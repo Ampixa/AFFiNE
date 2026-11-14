@@ -58,8 +58,40 @@ const bookmarkFlavours = new Set([
   'affine:embed-loom',
 ]);
 
+/** Only actual same-workspace links are references; never rewrite document content. */
+const linkedDocumentId = (
+  link: unknown,
+  spaceId: string,
+  origin?: string
+): string | undefined => {
+  if (typeof link !== 'string') return;
+  const relative = link.startsWith('/') && !link.startsWith('//');
+  if (!relative && !origin) return;
+  try {
+    const base = origin || 'https://local-workspace.invalid';
+    const url = new URL(link, base);
+    if (
+      !['http:', 'https:'].includes(url.protocol) ||
+      url.origin !== new URL(base).origin ||
+      url.username ||
+      url.password
+    )
+      return;
+    const match = /^\/workspace\/([^/]+)\/([^/]+)\/?$/.exec(url.pathname);
+    if (!match || decodeURIComponent(match[1]) !== spaceId) return;
+    const id = decodeURIComponent(match[2]);
+    if (!id || /[/\\]/.test(id)) return;
+    return id;
+  } catch {
+    return;
+  }
+};
+
 const collectInlineReferences = (
-  deltas: DeltaInsert<AffineTextAttributes>[]
+  deltas: DeltaInsert<AffineTextAttributes>[],
+  spaceId: string,
+  origin?: string,
+  includeHyperlinks = true
 ): { refDocId: string; ref: string }[] =>
   uniqBy(
     deltas
@@ -75,7 +107,12 @@ const collectInlineReferences = (
             ref: JSON.stringify({ docId: refDocId, ...params }),
           };
         }
-        return null;
+        const refDocId = includeHyperlinks
+          ? linkedDocumentId(delta.attributes?.link, spaceId, origin)
+          : undefined;
+        return refDocId
+          ? { refDocId, ref: JSON.stringify({ docId: refDocId }) }
+          : null;
       })
       .filter((ref): ref is { refDocId: string; ref: string } => ref !== null),
     item => item.ref
@@ -515,11 +552,14 @@ export async function readAllBlocksFromDoc({
   rootYDoc,
   spaceId,
   maxSummaryLength,
+  documentLinkOrigin = globalThis.location?.origin,
 }: {
   ydoc: YDoc;
   rootYDoc?: YDoc;
   spaceId: string;
   maxSummaryLength?: number;
+  /** Trusted workspace server origin for absolute document hyperlinks. */
+  documentLinkOrigin?: string;
 }): Promise<
   | {
       blocks: BlockDocumentInfo[];
@@ -662,7 +702,12 @@ export async function readAllBlocksFromDoc({
       }
 
       const deltas: DeltaInsert<AffineTextAttributes>[] = text.toDelta();
-      const refs = collectInlineReferences(deltas);
+      const refs = collectInlineReferences(
+        deltas,
+        spaceId,
+        documentLinkOrigin,
+        flavour !== 'affine:code'
+      );
 
       const databaseName =
         flavour === 'affine:paragraph' && parentFlavour === 'affine:database' // if block is a database row
@@ -813,7 +858,11 @@ export async function readAllBlocksFromDoc({
             if (!deltas?.length) {
               continue;
             }
-            const refs = collectInlineReferences(deltas);
+            const refs = collectInlineReferences(
+              deltas,
+              spaceId,
+              documentLinkOrigin
+            );
             if (refs.length) {
               databaseRefs.push(...refs);
             }
@@ -858,7 +907,17 @@ export async function readAllBlocksFromDoc({
         content: contents,
       });
     } else if (bookmarkFlavours.has(flavour)) {
-      blockDocuments.push({ ...commonBlockProps });
+      const refDocId = linkedDocumentId(
+        block.get('prop:url'),
+        spaceId,
+        documentLinkOrigin
+      );
+      blockDocuments.push({
+        ...commonBlockProps,
+        ...(refDocId
+          ? { refDocId: [refDocId], ref: [JSON.stringify({ docId: refDocId })] }
+          : {}),
+      });
     }
   }
   // #endregion
