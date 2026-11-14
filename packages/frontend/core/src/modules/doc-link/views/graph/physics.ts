@@ -33,6 +33,12 @@ export function stepParticles(
       a.vy -= (dy / distance) * force;
       b.vx += (dx / distance) * force;
       b.vy += (dy / distance) * force;
+      // Short labels need more horizontal room than the node circles.
+      if (Math.abs(dx) < 190 && Math.abs(dy) < 36) {
+        const separation = (36 - Math.abs(dy)) * 0.035 * (dy < 0 ? -1 : 1);
+        a.vy -= separation;
+        b.vy += separation;
+      }
     }
   }
   for (const edge of links) {
@@ -42,7 +48,7 @@ export function stepParticles(
     const dx = b.x - a.x,
       dy = b.y - a.y,
       d = Math.max(1, Math.hypot(dx, dy));
-    const f = (d - 115) * 0.009;
+    const f = (d - 165) * 0.004;
     a.vx += (dx / d) * f;
     a.vy += (dy / d) * f;
     b.vx -= (dx / d) * f;
@@ -55,9 +61,9 @@ export function stepParticles(
       p.vy = 0;
       continue;
     }
-    p.vx = (p.vx + (p.homeX - p.x) * 0.003) * 0.77;
-    p.vy = (p.vy + (p.homeY - p.y) * 0.003) * 0.77;
-    p.x = Math.max(45, Math.min(855, p.x + Math.max(-8, Math.min(8, p.vx))));
+    p.vx = (p.vx + (p.homeX - p.x) * 0.001) * 0.84;
+    p.vy = (p.vy + (p.homeY - p.y) * 0.001) * 0.84;
+    p.x = Math.max(105, Math.min(795, p.x + Math.max(-8, Math.min(8, p.vx))));
     p.y = Math.max(65, Math.min(535, p.y + Math.max(-8, Math.min(8, p.vy))));
     energy += Math.abs(p.vx) + Math.abs(p.vy);
   }
