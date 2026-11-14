@@ -284,8 +284,10 @@ export const menuButtonItems = {
       if (!menu.search(config.name)) {
         return;
       }
-      const onChange = (on: boolean) => {
-        config.onChange(on);
+      let on = config.on;
+      const onChange = (value: boolean) => {
+        on = value;
+        config.onChange(value);
       };
 
       const data: MenuButtonData = {
@@ -295,13 +297,17 @@ export const menuButtonItems = {
             ${config.label?.() ?? config.name}
           </div>
           <toggle-switch
-            .on="${config.on}"
+            .on="${on}"
             .onChange="${onChange}"
+            @click=${(event: MouseEvent) => event.stopPropagation()}
           ></toggle-switch>
           ${config.postfix}
         `,
-        select: () => {
-          config.onChange(config.on);
+        select: element => {
+          const toggle = element.querySelector('toggle-switch');
+          const next = !on;
+          if (toggle) toggle.on = next;
+          onChange(next);
           return false;
         },
         class: config.class ?? {},

@@ -64,7 +64,6 @@ export function useGraphMotion(seed: Map<string, Point>, links: GraphEdge[]) {
           vy: 0,
           homeX: p.x,
           homeY: p.y,
-          ...particles.current.get(id),
         },
       ])
     );

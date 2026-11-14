@@ -48,3 +48,21 @@ export function neighborhood(id: string, edges: GraphEdge[]) {
     ),
   ]);
 }
+
+/** Hubs are explicit navigation documents, not inferred write/access parents.
+ * Workspaces without named hubs use documents with no incoming indexed links.
+ * A cycle-only graph falls back to all nodes so the default never hides everything.
+ */
+export function graphOverview(nodes: GraphDoc[], links: GraphEdge[]) {
+  const hubs = nodes.filter(node =>
+    /(?:^|[—–-]\s+).*\bhub$/i.test(node.title.trim())
+  );
+  if (hubs.length)
+    return { ids: new Set(hubs.map(n => n.id)), label: 'Project hubs' };
+  const incoming = new Set(links.map(edge => edge.target));
+  const roots = nodes.filter(node => !incoming.has(node.id));
+  return {
+    ids: new Set((roots.length ? roots : nodes).map(n => n.id)),
+    label: roots.length ? 'Entry documents' : 'All documents',
+  };
+}

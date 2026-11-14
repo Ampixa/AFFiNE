@@ -25,6 +25,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
+      - name: Cache Yarn package downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.yarn/berry/cache
+          key: ampixa-yarn-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('yarn.lock', '.yarnrc.yml') }}
+          restore-keys: |
+            ampixa-yarn-${{ runner.os }}-${{ runner.arch }}-
       - name: Validate release scripts
         run: |
           for file in deploy/ampixa/ci/*.sh; do bash -n "$file"; done
