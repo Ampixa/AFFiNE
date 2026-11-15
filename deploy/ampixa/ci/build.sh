@@ -55,6 +55,7 @@ node deploy/ampixa/claude-files/memory-smoke.mjs
 (
   cd packages/backend/server
   NODE_OPTIONS="--import=$root/tools/cli/register.js" yarn test \
+    src/__tests__/workspace/task-snapshot.spec.ts \
     src/__tests__/copilot/local-document-search.spec.ts \
     src/__tests__/copilot/document-editing.spec.ts \
     src/__tests__/copilot/local-search-postgres.spec.ts \

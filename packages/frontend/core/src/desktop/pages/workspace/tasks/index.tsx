@@ -452,29 +452,34 @@ export const Component = () => {
             <span>{counts.blocked} blocked</span>
             <span>{counts.review} ready for review</span>
           </div>
-          {workspace.loading ? (
+          {workspace.loading && (
             <p className={styles.muted} role="status">
-              Loading accessible tasks…
+              {workspace.scanProgress.total > 0
+                ? `Checking documents: ${workspace.scanProgress.completed} of ${workspace.scanProgress.total}…`
+                : 'Checking workspace access…'}
             </p>
-          ) : !filtered.length ? (
-            <div className={styles.empty}>
-              <h3>
-                {workspace.tasks.length
-                  ? 'No tasks match this view.'
-                  : 'Start with one small next step.'}
-              </h3>
-              <p>
-                Each task is an AFFiNE document. Link the context, choose an
-                owner, and keep work moving.
-              </p>
-              <Button
-                variant="primary"
-                disabled={!workspace.canCreate}
-                onClick={() => edit()}
-              >
-                Create a task
-              </Button>
-            </div>
+          )}
+          {!filtered.length ? (
+            workspace.loading ? null : (
+              <div className={styles.empty}>
+                <h3>
+                  {workspace.tasks.length
+                    ? 'No tasks match this view.'
+                    : 'Start with one small next step.'}
+                </h3>
+                <p>
+                  Each task is an AFFiNE document. Link the context, choose an
+                  owner, and keep work moving.
+                </p>
+                <Button
+                  variant="primary"
+                  disabled={!workspace.canCreate}
+                  onClick={() => edit()}
+                >
+                  Create a task
+                </Button>
+              </div>
+            )
           ) : view === 'list' ? (
             <div className={styles.tableWrap}>
               <table className={styles.table}>

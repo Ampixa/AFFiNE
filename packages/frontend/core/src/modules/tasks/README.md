@@ -17,7 +17,7 @@ Tasks are AFFiNE documents, not a separate application or database. The desktop 
 
 Cloud read/update checks run before access and writes; workspace and document access events invalidate displayed data. Assignment accepts only accepted workspace members and never grants document access. Source lists and related tasks only include readable documents. Local non-shared workspaces work offline and intentionally have no invented member directory.
 
-Discovery currently scans readable workspace documents and retains authorized opened documents and their transaction listeners while the view is mounted. Focus and periodic refresh pick up changes, with realtime invalidation for access changes. Discovery uses four concurrent workers; ordinary refreshes share an active scan instead of restarting it. A five-second document-load timeout exposes incomplete coverage while allowing other documents to finish. Large-workspace performance remains unmeasured. Newly readable cloud documents receive a targeted pull retry after a successful permission check; this does not reset global sync clocks or write to the remote document.
+Discovery reads authorized cloud snapshots into isolated Yjs documents while the view is mounted. Focus and periodic refresh recheck access. Two workers share an active scan rather than restarting it; a five-second snapshot-load timeout reports incomplete coverage. Realtime listeners cover actual tasks and linked sources and must be ready before those connections are published. Local/offline workspaces retain native document discovery. Production-scale acceptance is required before deploying this revision.
 
 Legacy preview `ampixa:task-links` entries and native references are detected and blocked from further linking, not silently deleted or migrated. The explicit Remove legacy links action removes matching current references and legacy map entries while preserving text, unrelated links and source documents. Earlier sync history and backups remain unchanged. Revocation hides further access; it cannot erase information a previously authorized client already downloaded. Source readers can see opaque relation tokens/counts, but those do not reveal unreadable task identities.
 
@@ -44,3 +44,9 @@ Additional isolated server checks passed: 25 checks with five synthetic accounts
 - Context removal, notifications, reviewer assignment, dependencies, custom workflow configuration and task-specific graph overlays are not part of this first preview.
 
 No production workspace data is copied into the preview. No backend deployment or schema migration is introduced by this feature.
+
+## Production-scale discovery safeguards
+
+Cloud discovery reads isolated Yjs snapshots through an authenticated, per-document authorized endpoint. It does not open the editor, run editor migrations, enqueue sync retries, record document visits, or compact pending updates into persisted snapshots. The endpoint merges pending updates in memory only. Explicit create/edit/link actions still use the ordinary document editor and fresh write-permission checks.
+
+Scanning is bounded to two concurrent documents and reports progress. Creation becomes available after workspace permission verification instead of waiting for the full scan. The local storage observer applies updates only to isolated snapshots; it cannot publish them back. Large-workspace acceptance must include unchanged document contents and snapshot/update counts, limited database pools, responsiveness of existing documents, and access revocation while task details are open.

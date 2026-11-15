@@ -2,7 +2,12 @@ import { UserFriendlyError } from '@affine/error';
 import { useLiveData, useServices } from '@toeverything/infra';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Subscription } from 'rxjs';
-import { Text as YText } from 'yjs';
+import {
+  applyUpdate,
+  Doc as YDoc,
+  encodeStateAsUpdate,
+  Text as YText,
+} from 'yjs';
 
 import { AuthService, WorkspaceServerService } from '../cloud';
 import { type Doc, DocsService } from '../doc';
@@ -23,7 +28,7 @@ import {
 } from './model';
 
 type OpenDoc = {
-  doc: Doc;
+  doc: Pick<Doc, 'yDoc' | 'title$' | 'trash$'>;
   release: () => void;
   stop: () => void;
   canEdit: boolean;
@@ -58,27 +63,49 @@ export function useTasks() {
     { id: string; title: string; canEdit: boolean }[]
   >([]);
   const [loading, setLoading] = useState(true);
+  const [scanProgress, setScanProgress] = useState({ completed: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
   const [canCreate, setCanCreate] = useState(false);
   const held = useRef(new Map<string, OpenDoc>());
+  const snapshots = useRef(new Map<string, YDoc>());
   const readableIds = useRef(new Set<string>());
   const mounted = useRef(false);
   const generation = useRef(0);
   const scanning = useRef<Promise<void> | null>(null);
+  const accessWatches = useRef(new Map<string, Subscription>());
+  const watchedIds = useRef(new Set<string>());
+  const invalidateAccess = useRef<(retry: boolean) => void>(() => {});
+  const requestRefresh = useRef<() => void>(() => {});
+  const stopAccessWatches = useCallback(() => {
+    for (const subscription of accessWatches.current.values())
+      subscription.unsubscribe();
+    accessWatches.current.clear();
+    watchedIds.current.clear();
+  }, []);
   const publish = useCallback(() => {
     if (!mounted.current) return;
     const result: Task[] = [];
     const sourcesByTask = new Map<string, string[]>();
     const taskByToken = new Map<string, string>();
     held.current.forEach(({ doc }, taskId) => {
-      if (!readableIds.current.has(taskId) || doc.trash$.value) return;
+      if (
+        !readableIds.current.has(taskId) ||
+        doc.trash$.value ||
+        (!isLocal && !watchedIds.current.has(taskId))
+      )
+        return;
       const fields = doc.yDoc.getMap(TASK_MAP);
       const token = fields.get('linkToken');
       if (fields.get('schemaVersion') === 1 && typeof token === 'string')
         taskByToken.set(token, taskId);
     });
     held.current.forEach(({ doc }, sourceId) => {
-      if (!readableIds.current.has(sourceId) || doc.trash$.value) return;
+      if (
+        !readableIds.current.has(sourceId) ||
+        doc.trash$.value ||
+        (!isLocal && !watchedIds.current.has(sourceId))
+      )
+        return;
       doc.yDoc.getMap(SOURCE_TASKS_MAP).forEach((linked, token) => {
         const taskId = taskByToken.get(token);
         if (linked !== true || !taskId) return;
@@ -88,7 +115,12 @@ export function useTasks() {
       });
     });
     held.current.forEach(({ doc, canEdit }, id) => {
-      if (!readableIds.current.has(id) || doc.trash$.value) return;
+      if (
+        !readableIds.current.has(id) ||
+        doc.trash$.value ||
+        (!isLocal && !watchedIds.current.has(id))
+      )
+        return;
       const task = readTask(
         id,
         doc.title$.value,
@@ -104,7 +136,7 @@ export function useTasks() {
         });
     });
     setTasks(result.sort((a, b) => b.updatedAt - a.updatedAt));
-  }, []);
+  }, [isLocal]);
   const allowed = useCallback(
     async (
       action: 'Doc_Read' | 'Doc_Update' | 'Doc_Users_Read',
@@ -131,6 +163,101 @@ export function useTasks() {
       held.current.delete(id);
     }
   }, []);
+  const openForRead = useCallback(
+    (id: string) => {
+      if (isLocal) {
+        const opened = docsService.open(id);
+        return { ...opened, load: () => opened.doc.waitForSyncReady() };
+      }
+      const record = docsService.list.doc$(id).value;
+      const server = workspaceServerService.server;
+      if (!record || !server) throw new Error('Document unavailable.');
+      // Discovery must not initialize editors, run document migrations, connect
+      // writable Yjs documents, or enqueue indexing/sync for every workspace doc.
+      const yDoc = new YDoc({ guid: id });
+      const abort = new AbortController();
+      snapshots.current.set(id, yDoc);
+      return {
+        doc: { yDoc, title$: record.title$, trash$: record.trash$ },
+        load: async () => {
+          const response = await server.fetch(
+            `/api/workspaces/${encodeURIComponent(workspace.id)}/docs/${encodeURIComponent(id)}/task-snapshot`,
+            {
+              signal: abort.signal,
+              headers: { Accept: 'application/octet-stream' },
+            }
+          );
+          const update = new Uint8Array(await response.arrayBuffer());
+          if (!abort.signal.aborted) applyUpdate(yDoc, update, 'task-snapshot');
+        },
+        release: () => {
+          abort.abort();
+          if (snapshots.current.get(id) === yDoc) snapshots.current.delete(id);
+          yDoc.destroy();
+        },
+      };
+    },
+    [docsService, isLocal, workspace.id, workspaceServerService]
+  );
+  const watchAccess = useCallback(
+    async (id: string) => {
+      if (isLocal || watchedIds.current.has(id)) return;
+      const subscriptions = new Subscription();
+      accessWatches.current.set(id, subscriptions);
+      const ready = (topic: 'doc.share-state.changed' | 'doc.grants.changed') =>
+        new Promise<void>((resolve, reject) => {
+          let initialized = false;
+          const timer = setTimeout(
+            () => reject(new Error('Access updates unavailable.')),
+            15000
+          );
+          subscriptions.add(() => {
+            clearTimeout(timer);
+            resolve();
+          });
+          subscriptions.add(
+            nbstoreService.realtime
+              .subscribe(topic, { workspaceId: workspace.id, docId: id })
+              .subscribe({
+                next: event => {
+                  if (
+                    'type' in event &&
+                    event.type === 'ready' &&
+                    !initialized
+                  ) {
+                    initialized = true;
+                    clearTimeout(timer);
+                    resolve();
+                  } else invalidateAccess.current(true);
+                },
+                error: () => {
+                  clearTimeout(timer);
+                  reject(new Error('Access updates unavailable.'));
+                  invalidateAccess.current(false);
+                },
+              })
+          );
+        });
+      try {
+        await ready('doc.share-state.changed');
+        if (subscriptions.closed) return;
+        if (await allowed('Doc_Users_Read', id))
+          await ready('doc.grants.changed');
+        if (subscriptions.closed) return;
+        if (!(await allowed('Doc_Read', id)))
+          throw new Error('Document access changed.');
+        if (!subscriptions.closed) watchedIds.current.add(id);
+      } catch (error) {
+        subscriptions.unsubscribe();
+        if (accessWatches.current.get(id) === subscriptions) {
+          accessWatches.current.delete(id);
+          watchedIds.current.delete(id);
+        }
+        throw error;
+      }
+    },
+    [allowed, isLocal, nbstoreService, workspace.id]
+  );
   const refresh = useCallback(async () => {
     // Ordinary refreshes must not restart a slow scan. Access events explicitly
     // clear this promise and invalidate its generation before rechecking.
@@ -145,6 +272,8 @@ export function useTasks() {
         const create =
           !workspace.openOptions.isSharedMode &&
           (isLocal || (await guardService.can('Workspace_CreateDoc')));
+        if (!active()) return;
+        setCanCreate(create);
         const visible: { id: string; title: string; canEdit: boolean }[] = [];
         const readable = new Set<string>();
         let incomplete = false;
@@ -161,28 +290,19 @@ export function useTasks() {
             drop(id);
             return;
           }
-          const canEditSource = await allowed('Doc_Update', id);
-          if (!active()) return;
           readable.add(id);
-          visible.push({
-            id,
-            title: record.title$.value || 'Untitled',
-            canEdit: canEditSource,
-          });
           let entry = held.current.get(id);
           if (!entry) {
-            const opened = docsService.open(id);
+            const opened = openForRead(id);
             try {
-              // A newly granted document may be absent from incremental remote
-              // clocks, or have a cached permission error. Re-request only this
-              // authorized document once when opening it, never on each scan.
+              // Read the current authorized snapshot without entering the editor
+              // lifecycle. Abandon slow reads and report incomplete coverage.
               let loadTimer: ReturnType<typeof setTimeout> | undefined;
               let loaded: boolean;
               try {
                 loaded = await Promise.race([
                   (async () => {
-                    if (!isLocal) await workspace.engine.doc.retryDoc(id);
-                    await opened.doc.waitForSyncReady();
+                    await opened.load();
                     return true;
                   })(),
                   new Promise<false>(resolve => {
@@ -207,16 +327,21 @@ export function useTasks() {
                 if (index >= 0) visible.splice(index, 1);
                 return;
               }
-              // Load-ready may precede remote hydration. Keep authorized docs
-              // observed so later task fields or source relations become visible.
-              // Dropping currently empty maps would miss those incoming updates.
+              // Storage updates are applied to isolated snapshots, never back
+              // into writable storage. Keep empty sources for future links.
               const canEdit = await allowed('Doc_Update', id);
               if (!active()) {
                 opened.release();
                 return;
               }
               entry = { ...opened, canEdit, stop: () => {} };
-              const emit = () => publish();
+              const emit = () => {
+                publish();
+                // Newly arriving tasks/relations must establish their access
+                // listeners before they become visible.
+                if (!isLocal && !watchedIds.current.has(id))
+                  requestRefresh.current();
+              };
               opened.doc.yDoc.on('afterTransaction', emit);
               const titleSubscription = opened.doc.title$.subscribe(emit);
               entry.stop = () => {
@@ -233,20 +358,61 @@ export function useTasks() {
             if (!active()) return;
             entry.canEdit = canEdit;
           }
+          visible.push({
+            id,
+            title: record.title$.value || 'Untitled',
+            canEdit: entry.canEdit,
+          });
         };
         const pendingIds = [...docsService.list.nonTrashDocsIds$.value];
         let next = 0;
+        let completed = 0;
+        setScanProgress({ completed, total: pendingIds.length });
         // Bound network and document-loading work without serializing the whole
         // workspace behind one round trip per permission check.
         await Promise.all(
-          Array.from({ length: Math.min(4, pendingIds.length) }, async () => {
+          Array.from({ length: Math.min(2, pendingIds.length) }, async () => {
             while (active() && next < pendingIds.length) {
               await scanDoc(pendingIds[next++]);
+              if (active())
+                setScanProgress({
+                  completed: ++completed,
+                  total: pendingIds.length,
+                });
             }
           })
         );
         if (!active()) return;
         for (const id of held.current.keys()) if (!readable.has(id)) drop(id);
+        // Watch only actual tasks and sources linked to those tasks. Opening
+        // Tasks must not authorize hundreds of irrelevant document listeners.
+        const relevant = new Set<string>();
+        const tokens = new Set<string>();
+        for (const [id, entry] of held.current) {
+          if (!readable.has(id)) continue;
+          const fields = entry.doc.yDoc.getMap(TASK_MAP);
+          if (fields.get('schemaVersion') !== 1) continue;
+          relevant.add(id);
+          const token = fields.get('linkToken');
+          if (typeof token === 'string') tokens.add(token);
+        }
+        for (const [id, entry] of held.current) {
+          if (!readable.has(id)) continue;
+          entry.doc.yDoc.getMap(SOURCE_TASKS_MAP).forEach((linked, token) => {
+            if (linked === true && tokens.has(token)) relevant.add(id);
+          });
+        }
+        for (const id of relevant) {
+          await watchAccess(id);
+          if (!active()) return;
+        }
+        for (const [id, subscription] of accessWatches.current) {
+          if (!relevant.has(id)) {
+            subscription.unsubscribe();
+            accessWatches.current.delete(id);
+            watchedIds.current.delete(id);
+          }
+        }
         readableIds.current = readable;
         setReadableDocs(visible);
         setCanCreate(create);
@@ -268,6 +434,7 @@ export function useTasks() {
           setCanCreate(false);
           readableIds.current.clear();
           for (const id of held.current.keys()) drop(id);
+          stopAccessWatches();
         }
       } finally {
         if (active()) setLoading(false);
@@ -285,9 +452,12 @@ export function useTasks() {
     drop,
     guardService,
     isLocal,
+    openForRead,
     publish,
     workspace,
     workspacePermissionService,
+    watchAccess,
+    stopAccessWatches,
   ]);
   const reportRefreshError = useCallback(() => {
     if (mounted.current) setError('Could not refresh tasks. Please try again.');
@@ -295,6 +465,31 @@ export function useTasks() {
   useEffect(() => {
     const openedDocs = held.current;
     mounted.current = true;
+    requestRefresh.current = () => void refresh().catch(reportRefreshError);
+    invalidateAccess.current = retry => {
+      generation.current++;
+      scanning.current = null;
+      readableIds.current.clear();
+      stopAccessWatches();
+      for (const id of held.current.keys()) drop(id);
+      setCanCreate(false);
+      setTasks([]);
+      setReadableDocs([]);
+      if (retry) void refresh().catch(reportRefreshError);
+      else {
+        setLoading(false);
+        setError(
+          'Access updates disconnected. Refresh to verify access again.'
+        );
+      }
+    };
+    const stopSnapshotUpdates = isLocal
+      ? undefined
+      : workspace.engine.doc.storage.subscribeDocUpdate(update => {
+          const snapshot = snapshots.current.get(update.docId);
+          if (snapshot)
+            applyUpdate(snapshot, update.bin, 'task-storage-update');
+        });
     void refresh().catch(reportRefreshError);
     const timer = setInterval(
       () => void refresh().catch(reportRefreshError),
@@ -313,17 +508,10 @@ export function useTasks() {
                 accessReady = true;
                 return;
               }
-              generation.current++;
-              scanning.current = null;
-              for (const id of held.current.keys()) drop(id);
-              setCanCreate(false);
-              setTasks([]);
-              setReadableDocs([]);
-              readableIds.current.clear();
-              void refresh().catch(reportRefreshError);
+              invalidateAccess.current(true);
             },
             error: () => {
-              setError('Access updates disconnected. Refresh before editing.');
+              invalidateAccess.current(false);
             },
           });
     return () => {
@@ -335,6 +523,10 @@ export function useTasks() {
       clearInterval(timer);
       window.removeEventListener('focus', onFocus);
       accessSubscription?.unsubscribe();
+      stopSnapshotUpdates?.();
+      stopAccessWatches();
+      invalidateAccess.current = () => {};
+      requestRefresh.current = () => {};
       for (const id of openedDocs.keys()) drop(id);
     };
   }, [
@@ -345,91 +537,8 @@ export function useTasks() {
     nbstoreService,
     refresh,
     reportRefreshError,
-    workspace.id,
-  ]);
-
-  const readableKey = readableDocs
-    .map(doc => doc.id)
-    .sort()
-    .join('\n');
-  useEffect(() => {
-    if (isLocal || !readableKey) return;
-    let cancelled = false;
-    const subscriptions = new Subscription();
-    const invalidate = (retry: boolean) => {
-      if (cancelled) return;
-      generation.current++;
-      scanning.current = null;
-      readableIds.current.clear();
-      for (const id of held.current.keys()) drop(id);
-      setTasks([]);
-      setReadableDocs([]);
-      setCanCreate(false);
-      if (retry) void refresh().catch(reportRefreshError);
-      else
-        setError(
-          'Document access updates disconnected. Refresh to verify access again.'
-        );
-    };
-    for (const docId of readableKey.split('\n')) {
-      let shareReady = false;
-      subscriptions.add(
-        nbstoreService.realtime
-          .subscribe('doc.share-state.changed', {
-            workspaceId: workspace.id,
-            docId,
-          })
-          .subscribe({
-            next: event => {
-              if ('type' in event && event.type === 'ready' && !shareReady) {
-                shareReady = true;
-                return;
-              }
-              invalidate(true);
-            },
-            error: () => invalidate(false),
-          })
-      );
-      void allowed('Doc_Users_Read', docId)
-        .then(can => {
-          if (cancelled || !can) return;
-          let grantsReady = false;
-          subscriptions.add(
-            nbstoreService.realtime
-              .subscribe('doc.grants.changed', {
-                workspaceId: workspace.id,
-                docId,
-              })
-              .subscribe({
-                next: event => {
-                  if (
-                    'type' in event &&
-                    event.type === 'ready' &&
-                    !grantsReady
-                  ) {
-                    grantsReady = true;
-                    return;
-                  }
-                  invalidate(true);
-                },
-                error: () => invalidate(false),
-              })
-          );
-        })
-        .catch(() => invalidate(false));
-    }
-    return () => {
-      cancelled = true;
-      subscriptions.unsubscribe();
-    };
-  }, [
-    allowed,
-    drop,
-    isLocal,
-    nbstoreService,
-    readableKey,
-    refresh,
-    reportRefreshError,
+    workspace.engine.doc.storage,
+    stopAccessWatches,
     workspace.id,
   ]);
 
@@ -478,6 +587,13 @@ export function useTasks() {
         if (!(await allowed('Doc_Update', id)))
           throw new Error('Task editing access changed.');
         await action(opened.doc);
+        const snapshot = snapshots.current.get(id);
+        if (snapshot)
+          applyUpdate(
+            snapshot,
+            encodeStateAsUpdate(opened.doc.yDoc),
+            'task-local-edit'
+          );
       } finally {
         opened.release();
       }
@@ -532,6 +648,13 @@ export function useTasks() {
           // The token cannot identify a task without access to its document.
           // Neither endpoint stores the other document's ID or title.
           source.yDoc.getMap(SOURCE_TASKS_MAP).set(token as string, true);
+          const snapshot = snapshots.current.get(taskId);
+          if (snapshot)
+            applyUpdate(
+              snapshot,
+              encodeStateAsUpdate(opened.doc.yDoc),
+              'task-local-edit'
+            );
         } finally {
           opened.release();
         }
@@ -689,13 +812,21 @@ export function useTasks() {
         opened.release();
       }
       try {
+        if (!isLocal) {
+          // The next read-only HTTP snapshot must include this new task. Only its
+          // explicit creation is synced; discovery never starts document writes.
+          await workspace.engine.doc.waitForSynced(
+            record.id,
+            AbortSignal.timeout(15000)
+          );
+        }
         for (const id of new Set(linkedDocIds))
           await linkDocument(record.id, id);
       } catch (e) {
         await refresh();
         throw Object.assign(
           new Error(
-            `Task created, but linking did not finish. Open the task to retry. ${e instanceof Error ? e.message : ''}`
+            `Task created locally, but syncing or linking did not finish. Open the task to retry. ${e instanceof Error ? e.message : ''}`
           ),
           { createdTaskId: record.id, createdTask }
         );
@@ -719,6 +850,7 @@ export function useTasks() {
   return {
     tasks,
     loading,
+    scanProgress,
     error,
     readableDocs,
     canCreate,

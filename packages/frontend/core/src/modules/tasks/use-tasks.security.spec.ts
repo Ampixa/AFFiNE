@@ -53,6 +53,7 @@ function setup() {
   const permissions = new Map<string, boolean>();
   const events = new Map<string, Subject<unknown>>();
   const members: { id: string; status: string }[] = [];
+  const storageUpdates = new Subject<{ docId: string; bin: Uint8Array }>();
   const event = (topic: string, docId = '') => {
     const key = topic + ':' + docId;
     if (!events.has(key)) events.set(key, new Subject());
@@ -81,6 +82,9 @@ function setup() {
         ],
       },
     };
+    yDoc.on('update', (bin: Uint8Array) =>
+      storageUpdates.next({ docId: id, bin })
+    );
     records.set(id, record);
     docs.set(id, doc);
     ids.next([...records.keys()]);
@@ -111,11 +115,38 @@ function setup() {
         id: 'test-workspace',
         flavour: 'affine-cloud',
         openOptions: {},
-        engine: { doc: { retryDoc: vi.fn(async () => {}) } },
+        engine: {
+          doc: {
+            retryDoc: vi.fn(async () => {}),
+            waitForSynced: vi.fn(async () => {}),
+            storage: {
+              pushDocUpdate: vi.fn(),
+              subscribeDocUpdate: (
+                callback: (update: { docId: string; bin: Uint8Array }) => void
+              ) => {
+                const subscription = storageUpdates.subscribe(callback);
+                return () => subscription.unsubscribe();
+              },
+            },
+          },
+        },
       },
     },
     workspaceServerService: {
       server: {
+        fetch: vi.fn(async (path: string) => {
+          const id = decodeURIComponent(path.split('/').at(-2)!);
+          const doc = docs.get(id);
+          await doc.waitForSyncReady();
+          const data = encodeStateAsUpdate(doc.yDoc);
+          return {
+            arrayBuffer: async () =>
+              data.buffer.slice(
+                data.byteOffset,
+                data.byteOffset + data.byteLength
+              ),
+          };
+        }),
         scope: {
           get: () => ({
             session: { account$: new BehaviorSubject({ id: 'user-a' }) },
@@ -153,6 +184,7 @@ function setup() {
     members,
     addDoc,
     grant,
+    fetch: fixture.services.workspaceServerService.server.fetch,
   };
 }
 
@@ -165,6 +197,161 @@ beforeEach(() => {
 });
 
 describe('task security boundaries (mocked services, real hook and Yjs)', () => {
+  it('leaves existing document bytes unchanged during discovery and refresh', async () => {
+    const f = setup();
+    const doc = f.addDoc('ordinary', 'Existing prose');
+    doc.yDoc.getText('body').insert(0, 'Preserve this existing document.');
+    f.grant(doc.id, true);
+    const before = encodeStateAsUpdate(doc.yDoc);
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(encodeStateAsUpdate(doc.yDoc)).toEqual(before);
+    expect(f.docsService.open).not.toHaveBeenCalled();
+    expect(
+      fixture.services.workspaceService.workspace.engine.doc.retryDoc
+    ).not.toHaveBeenCalled();
+    expect(
+      fixture.services.workspaceService.workspace.engine.doc.storage
+        .pushDocUpdate
+    ).not.toHaveBeenCalled();
+  });
+
+  it('enables permitted creation before the document scan finishes', async () => {
+    const f = setup();
+    f.permissions.set('Workspace_CreateDoc:', true);
+    const doc = f.addDoc('slow', 'Slow context');
+    let finish!: () => void;
+    doc.waitForSyncReady.mockImplementation(
+      () =>
+        new Promise<void>(resolve => {
+          finish = resolve;
+        })
+    );
+    f.grant(doc.id);
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.canCreate).toBe(true));
+    expect(result.current.loading).toBe(true);
+    await act(async () => {
+      finish();
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.scanProgress).toEqual({ completed: 1, total: 1 });
+  });
+
+  it('does not expose a snapshot if read access changes while it is downloading', async () => {
+    const f = setup();
+    const doc = f.addDoc('revoked-in-flight', 'Hidden task', true);
+    let finish!: () => void;
+    doc.waitForSyncReady.mockImplementation(
+      () =>
+        new Promise<void>(resolve => {
+          finish = resolve;
+        })
+    );
+    f.grant(doc.id);
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      f.permissions.set('Doc_Read:' + doc.id, false);
+      finish();
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.tasks).toEqual([]);
+    expect(result.current.readableDocs).toEqual([]);
+    expect(f.docsService.open).not.toHaveBeenCalled();
+  });
+
+  it('sets up access listeners without a workspace-wide permission-query burst', async () => {
+    const f = setup();
+    for (let i = 0; i < 12; i++) {
+      f.addDoc('doc-' + i, 'Task ' + i, true);
+      f.grant('doc-' + i);
+    }
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => {
+      finish = resolve;
+    });
+    const can = fixture.services.guardService.can;
+    can.mockImplementation(async (action: string, id = '') => {
+      if (action === 'Doc_Users_Read') await gate;
+      return f.permissions.get(action + ':' + id) === true;
+    });
+    const { result } = renderHook(() => useTasks());
+    const grantsCalls = () =>
+      can.mock.calls.filter(
+        ([action]: [string]) => action === 'Doc_Users_Read'
+      );
+    await waitFor(() => expect(grantsCalls()).toHaveLength(1));
+    expect(result.current.tasks).toEqual([]);
+    expect(result.current.loading).toBe(true);
+    await act(async () => {
+      finish();
+    });
+    await waitFor(() => expect(grantsCalls()).toHaveLength(12));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+  });
+
+  it('does not subscribe to unrelated context documents when there are no tasks', async () => {
+    const f = setup();
+    for (let i = 0; i < 12; i++) {
+      f.addDoc('plain-' + i, 'Ordinary document');
+      f.grant('plain-' + i);
+    }
+    const subscribe = vi.spyOn(
+      fixture.services.nbstoreService.realtime,
+      'subscribe'
+    );
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(
+      subscribe.mock.calls.filter(([topic]) => String(topic).startsWith('doc.'))
+    ).toEqual([]);
+    expect(
+      fixture.services.guardService.can.mock.calls.filter(
+        ([action]: [string]) => action === 'Doc_Users_Read'
+      )
+    ).toEqual([]);
+  });
+
+  it('withholds linked context until listeners are ready and rejects revocation during setup', async () => {
+    const f = setup();
+    const task = f.addDoc('task-with-context', 'Task', true);
+    task.yDoc.getMap(TASK_MAP).set('linkToken', 'opaque-token');
+    const source = f.addDoc('late-source', 'Private context');
+    source.yDoc.getMap(SOURCE_TASKS_MAP).set('opaque-token', true);
+    f.grant(task.id);
+    f.grant(source.id);
+    const realtime = fixture.services.nbstoreService.realtime;
+    const original = realtime.subscribe;
+    realtime.subscribe = vi.fn((topic: string, input: { docId?: string }) =>
+      topic === 'doc.share-state.changed' && input.docId === source.id
+        ? f.event(topic, source.id)
+        : original(topic, input)
+    );
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() =>
+      expect(
+        realtime.subscribe.mock.calls.some(
+          ([topic, input]: [string, { docId?: string }]) =>
+            topic === 'doc.share-state.changed' && input.docId === source.id
+        )
+      ).toBe(true)
+    );
+    expect(result.current.tasks).toEqual([]);
+    expect(result.current.readableDocs).toEqual([]);
+    await act(async () => {
+      f.permissions.set('Doc_Read:' + source.id, false);
+      f.event('doc.share-state.changed', source.id).next({ type: 'ready' });
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.tasks).toEqual([]);
+    expect(result.current.readableDocs).toEqual([]);
+    expect(result.current.error).toContain('Could not verify');
+  });
+
   it('bounds concurrent loads and coalesces refreshes without starving a slow scan', async () => {
     const f = setup();
     let finish!: () => void;
@@ -177,21 +364,22 @@ describe('task security boundaries (mocked services, real hook and Yjs)', () => 
       doc.waitForSyncReady.mockImplementation(() => gate);
     }
     const { result } = renderHook(() => useTasks());
-    await waitFor(() => expect(f.docsService.open).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(2));
     let refreshed!: Promise<void>;
     await act(async () => {
       refreshed = result.current.refresh();
       window.dispatchEvent(new Event('focus'));
       await Promise.resolve();
     });
-    expect(f.docsService.open).toHaveBeenCalledTimes(4);
+    expect(f.fetch).toHaveBeenCalledTimes(2);
     await act(async () => {
       finish();
       await refreshed;
     });
     await waitFor(() => expect(result.current.tasks).toHaveLength(12));
     expect(result.current.loading).toBe(false);
-    expect(f.docsService.open).toHaveBeenCalledTimes(12);
+    expect(f.fetch).toHaveBeenCalledTimes(12);
+    expect(f.docsService.open).not.toHaveBeenCalled();
   });
 
   it('finishes with explicit incomplete coverage when one document never loads', async () => {
@@ -214,7 +402,7 @@ describe('task security boundaries (mocked services, real hook and Yjs)', () => 
     ]);
   });
 
-  it('requests targeted cloud hydration only for authorized newly opened documents', async () => {
+  it('reads authorized snapshots without opening editors or scheduling sync writes', async () => {
     const f = setup();
     const task = f.addDoc('allowed-task', 'Task');
     task.yDoc.getMap(TASK_MAP).set('schemaVersion', 1);
@@ -224,16 +412,36 @@ describe('task security boundaries (mocked services, real hook and Yjs)', () => 
       fixture.services.workspaceService.workspace.engine.doc.retryDoc;
     const { result } = renderHook(() => useTasks());
     await waitFor(() => expect(result.current.tasks).toHaveLength(1));
-    expect(retry.mock.calls).toEqual([['allowed-task']]);
+    expect(retry).not.toHaveBeenCalled();
+    expect(
+      f.fetch.mock.calls.map(([path]: [string]) => path.split('/').at(-2))
+    ).toEqual(['allowed-task']);
+    expect(f.docsService.open).not.toHaveBeenCalled();
+    expect(
+      fixture.services.workspaceService.workspace.engine.doc.storage
+        .pushDocUpdate
+    ).not.toHaveBeenCalled();
     await act(async () => {
       await result.current.refresh();
     });
-    expect(retry.mock.calls).toEqual([['allowed-task']]);
+    expect(retry).not.toHaveBeenCalled();
+    expect(
+      f.fetch.mock.calls.map(([path]: [string]) => path.split('/').at(-2))
+    ).toEqual(['allowed-task']);
+    expect(f.docsService.open).not.toHaveBeenCalled();
+    expect(
+      fixture.services.workspaceService.workspace.engine.doc.storage
+        .pushDocUpdate
+    ).not.toHaveBeenCalled();
     f.grant('denied-source');
     await act(async () => {
       await result.current.refresh();
     });
-    expect(retry.mock.calls).toEqual([['allowed-task'], ['denied-source']]);
+    expect(retry).not.toHaveBeenCalled();
+    expect(
+      f.fetch.mock.calls.map(([path]: [string]) => path.split('/').at(-2))
+    ).toEqual(['allowed-task', 'denied-source']);
+    expect(f.docsService.open).not.toHaveBeenCalled();
   });
 
   it('resolves source relations arriving after the document is load-ready', async () => {
@@ -460,6 +668,34 @@ describe('task security boundaries (mocked services, real hook and Yjs)', () => 
       'legacy links'
     );
     expect(source.yDoc.getMap(SOURCE_TASKS_MAP).size).toBe(0);
+  });
+
+  it('syncs a newly created task before snapshot discovery and returns it without reopening other docs', async () => {
+    const f = setup();
+    f.permissions.set('Workspace_CreateDoc:', true);
+    const context = f.addDoc('existing-context', 'Existing document');
+    f.grant(context.id);
+    f.docsService.createDoc.mockImplementation(
+      ({ title }: { title: string }) => {
+        const doc = f.addDoc('new-task', title);
+        f.grant(doc.id, true);
+        return f.docsService.list.doc$(doc.id).value;
+      }
+    );
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let id: string | undefined;
+    await act(async () => {
+      id = await result.current.createTask({ title: 'New work' });
+    });
+    await waitFor(() =>
+      expect(result.current.tasks.map(task => task.id)).toEqual(['new-task'])
+    );
+    expect(id).toBe('new-task');
+    expect(
+      fixture.services.workspaceService.workspace.engine.doc.waitForSynced
+    ).toHaveBeenCalledWith('new-task', expect.any(AbortSignal));
+    expect(f.docsService.open.mock.calls).toEqual([['new-task']]);
   });
 
   it('allows accepted members and unassignment', async () => {
