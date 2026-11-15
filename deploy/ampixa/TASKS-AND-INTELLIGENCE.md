@@ -14,9 +14,12 @@ grant access to linked documents. Share only information appropriate for task
 readers: writing private information into a comment makes that text visible to
 them even if the original document remains private.
 
-Assigned members can update description (including Markdown checklists), status
-and blocker. Workspace administrators control creation, title, assignment,
-priority, target date, document relationships and archive/restore. Server checks
+Members can create tasks assigned to themselves. Assigned members can update
+description (including Markdown checklists), status and blocker, and link or
+unlink context documents they can read. They cannot create tasks for other people
+or use linking to gain document access. Workspace administrators control
+creation for others, title changes, assignment, priority, target date and
+archive/restore. Server checks
 apply to direct API calls as well as UI and MCP; controls are not the security
 boundary. Imported tasks retain their original document access boundary.
 
@@ -52,7 +55,8 @@ Use the existing reviewed migration/backup/restore procedure; never run a schema
 reset or build on the small production VM. Deploy frontend and backend together.
 Keep the comment table if rolling back so saved discussion remains recoverable.
 
-Required acceptance: multiple users, ownership/revision change while editor or
+Required acceptance: member self-creation, rejection of creation for others,
+readable-document linking to own tasks, multiple users, ownership/revision change while editor or
 AI preview is open, admin downgrade/member removal, other-author comment edits,
 read-only MCP, cross-workspace calls, private context revocation, escaped HTML
 and unsafe schemes, duplicate Apply, conversation pagination and refresh. Test

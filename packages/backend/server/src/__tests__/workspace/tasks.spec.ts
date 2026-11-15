@@ -56,6 +56,7 @@ function fixture() {
   const editable = new Set(['public-doc']);
   const calls: string[] = [];
   let onTransaction = () => {};
+  let onUpdate = () => {};
   const db = {
     snapshot: {
       findMany: async ({ where, select }: any) => {
@@ -105,6 +106,7 @@ function fixture() {
         return created;
       },
       updateMany: async ({ where, data }: any) => {
+        onUpdate();
         const current = rows.find(
           r =>
             r.id === where.id &&
@@ -261,6 +263,9 @@ function fixture() {
     comments,
     atTransaction: (fn: () => void) => {
       onTransaction = fn;
+    },
+    atUpdate: (fn: () => void) => {
+      onUpdate = fn;
     },
     pages,
     snapshotIds,
@@ -550,7 +555,8 @@ test('ordinary members can read shared tasks but only owners can edit progress',
   const owner = await f.service.get('editor', 'workspace', 'task');
   t.true(owner.canEdit);
   t.false(owner.canAdmin);
-  t.false((await f.service.list('editor', 'workspace')).canCreate);
+  t.true((await f.service.list('editor', 'workspace')).canCreate);
+  t.false((await f.service.list('editor', 'workspace')).canAdmin);
   t.false((await f.service.get('other', 'workspace', 'task')).canEdit);
   const result = await f.service.update('editor', 'workspace', 'task', {
     description: 'Next step and linked resources',
@@ -592,22 +598,143 @@ for (const patch of [
   });
 }
 
-test('member cannot create a task or change its document links', async t => {
+test('member creates a self-assigned task and links readable documents without edit permission', async t => {
   const f = fixture();
+  f.editable.clear();
+  const created = await f.service.create('editor', 'workspace', {
+    title: 'My next step',
+    priority: 'normal',
+    dueDate: null,
+    linkedDocIds: ['public-doc'],
+  });
+  t.is(created.assigneeId, 'editor');
+  t.true(created.canEdit);
+  t.true(created.canLink);
+  t.false(created.canAdmin);
   f.row.assigneeId = 'editor';
-  await t.throwsAsync(
-    () => f.service.create('editor', 'workspace', { title: 'Forged' }),
-    { instanceOf: ActionForbidden }
+  await f.service.link('editor', 'workspace', 'task', 'public-doc', true);
+  const linked = await f.service.link(
+    'editor',
+    'workspace',
+    'task',
+    'public-doc'
   );
-  await t.throwsAsync(
-    () => f.service.link('editor', 'workspace', 'task', 'public-doc'),
-    { instanceOf: ActionForbidden }
+  t.deepEqual(linked.linkedDocIds, ['public-doc']);
+  t.is(f.history.length, 3);
+});
+
+for (const fields of [
+  { assigneeId: 'other' },
+  { assigneeId: null },
+  { priority: 'urgent' },
+  { dueDate: '2026-12-01' },
+]) {
+  test(`member self-create rejects administrative override ${JSON.stringify(fields)}`, async t => {
+    const f = fixture();
+    await t.throwsAsync(
+      () =>
+        f.service.create('editor', 'workspace', {
+          title: 'No escalation',
+          ...fields,
+        }),
+      { instanceOf: ActionForbidden }
+    );
+    t.false(f.calls.includes('create'));
+  });
+}
+
+test('member can explicitly self-assign creation but cannot link another member task', async t => {
+  const f = fixture();
+  t.is(
+    (
+      await f.service.create('editor', 'workspace', {
+        title: 'Mine',
+        assigneeId: 'editor',
+      })
+    ).assigneeId,
+    'editor'
   );
-  await t.throwsAsync(
-    () => f.service.link('editor', 'workspace', 'task', 'public-doc', true),
-    { instanceOf: ActionForbidden }
-  );
+  f.row.assigneeId = 'other';
+  t.false((await f.service.get('editor', 'workspace', 'task')).canLink);
+  for (const remove of [false, true])
+    await t.throwsAsync(
+      () => f.service.link('editor', 'workspace', 'task', 'public-doc', remove),
+      { instanceOf: ActionForbidden }
+    );
   t.is(f.history.length, 1);
+});
+
+test('self-created task cannot reference unreadable documents or bypass legacy write ACL', async t => {
+  const f = fixture();
+  await t.throwsAsync(() =>
+    f.service.create('editor', 'workspace', {
+      title: 'Private',
+      linkedDocIds: ['private-doc'],
+    })
+  );
+  t.false(f.calls.includes('create'));
+  f.row.assigneeId = 'editor';
+  f.row.legacyDocId = 'public-doc';
+  f.editable.clear();
+  t.false((await f.service.get('editor', 'workspace', 'task')).canLink);
+  await t.throwsAsync(() =>
+    f.service.link('editor', 'workspace', 'task', 'public-doc', true)
+  );
+});
+
+for (const change of [
+  'ownership',
+  'membership',
+  'doc-read',
+  'workspace-write',
+] as const) {
+  test(`own link mutation rechecks ${change} inside transaction`, async t => {
+    const f = fixture();
+    f.row.assigneeId = 'editor';
+    f.atTransaction(() => {
+      if (change === 'ownership') f.row.assigneeId = 'other';
+      if (change === 'membership') f.members.delete('editor');
+      if (change === 'doc-read') f.readable.delete('public-doc');
+      if (change === 'workspace-write') f.writers.delete('editor');
+    });
+    await t.throwsAsync(() =>
+      f.service.link('editor', 'workspace', 'task', 'public-doc', true)
+    );
+    t.is(f.history.length, 1);
+    t.is(f.row.version, 1);
+  });
+}
+
+test('admin downgrade before creation cannot persist unassigned or other-assigned tasks', async t => {
+  for (const extra of [{}, { assigneeId: 'other' }]) {
+    const f = fixture();
+    f.atTransaction(() => f.admins.delete('member'));
+    await t.throwsAsync(
+      () =>
+        f.service.create('member', 'workspace', {
+          title: 'Downgrade',
+          ...extra,
+        }),
+      { instanceOf: ActionForbidden }
+    );
+    t.false(f.calls.includes('create'));
+  }
+});
+
+test('self-create rechecks document visibility and write capability before persistence', async t => {
+  for (const revoke of ['read', 'write']) {
+    const f = fixture();
+    f.atTransaction(() =>
+      revoke === 'read' ? f.readable.clear() : f.writers.delete('editor')
+    );
+    await t.throwsAsync(() =>
+      f.service.create('editor', 'workspace', {
+        title: 'Race',
+        linkedDocIds: ['public-doc'],
+      })
+    );
+    t.false(f.calls.includes('create'));
+  }
 });
 
 test('ownership changes invalidate an already opened member draft', async t => {
@@ -917,4 +1044,18 @@ test('task detail returns newest conversation page and older pages remain access
   const older = await f.service.comments('editor', 'workspace', 'task', '50');
   t.is(older.length, 5);
   t.is(older[0].body, 'Update 4');
+});
+
+test('own link atomic write rejects reassignment after transaction permission check', async t => {
+  const f = fixture();
+  f.row.assigneeId = 'editor';
+  f.atUpdate(() => {
+    f.row.assigneeId = 'other';
+  });
+  const error = await t.throwsAsync(() =>
+    f.service.link('editor', 'workspace', 'task', 'public-doc', true)
+  );
+  t.is(mapAnyError(error).status, 409);
+  t.is(f.history.length, 1);
+  t.is(f.row.version, 1);
 });

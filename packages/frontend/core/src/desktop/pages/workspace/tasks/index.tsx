@@ -177,6 +177,9 @@ export const Component = () => {
   const editable = selected ? Boolean(current?.canEdit) : workspace.canCreate;
   const administrative = selected
     ? editable && Boolean(current?.canAdmin)
+    : workspace.canAdmin;
+  const canLink = selected
+    ? editable && Boolean(current?.canLink)
     : workspace.canCreate;
   const [commentBody, setCommentBody] = useState('');
   const [editingComment, setEditingComment] = useState<TaskComment | null>(
@@ -241,7 +244,12 @@ export const Component = () => {
     setInitialDraft(JSON.stringify(nextDraft));
   }, [current, selected, dirty, open]);
   const edit = (task?: Task) => {
-    const d = task ? taskDraft(task) : emptyDraft();
+    const d = task
+      ? taskDraft(task)
+      : {
+          ...emptyDraft(),
+          assigneeId: workspace.canAdmin ? null : workspace.currentUserId,
+        };
     setSelected(task || null);
     setDraft(d);
     setInitialDraft(JSON.stringify(d));
@@ -289,8 +297,8 @@ export const Component = () => {
     if (!editable || busy) return;
     if (sourceId) {
       const source = workspace.readableDocs.find(doc => doc.id === sourceId);
-      if (!source || !('canEdit' in source && source.canEdit === true)) {
-        setFormError('Choose a context document you can edit.');
+      if (!canLink || !source) {
+        setFormError('Choose a context document you can access.');
         return;
       }
     }
@@ -674,7 +682,7 @@ export const Component = () => {
                   value={draft.title}
                   maxLength={200}
                   required
-                  disabled={!administrative || busy}
+                  disabled={!(selected ? administrative : editable) || busy}
                   onChange={e => set('title', e.target.value)}
                   placeholder="What needs to happen?"
                 />
@@ -791,7 +799,7 @@ export const Component = () => {
                   })}
                 </fieldset>
               )}
-              {administrative && (
+              {canLink && (
                 <div className={styles.field}>
                   Link a context document · optional
                   <span className={styles.muted}>
@@ -816,15 +824,8 @@ export const Component = () => {
                     {sourceDocs
                       .filter(d => !current?.linkedDocIds.includes(d.id))
                       .map(d => (
-                        <option
-                          key={d.id}
-                          value={d.id}
-                          disabled={!('canEdit' in d && d.canEdit === true)}
-                        >
+                        <option key={d.id} value={d.id}>
                           {d.title || 'Untitled'}
-                          {!('canEdit' in d && d.canEdit === true)
-                            ? ' · read only'
-                            : ''}
                         </option>
                       ))}
                   </select>

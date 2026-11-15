@@ -43,6 +43,7 @@ export interface Task {
   updatedAt: number;
   canEdit: boolean;
   canAdmin?: boolean;
+  canLink?: boolean;
   canComment?: boolean;
   comments?: TaskComment[];
   commentsNextCursor?: number | null;

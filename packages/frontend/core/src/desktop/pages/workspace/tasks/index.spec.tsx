@@ -138,6 +138,7 @@ const ticket = (patch: Partial<Task> = {}): Task => ({
   updatedAt: 100,
   canEdit: true,
   canAdmin: true,
+  canLink: true,
   canComment: true,
   comments: [],
   ...patch,
@@ -163,6 +164,7 @@ beforeEach(() => {
       { id: 'source-1', title: 'Research context', canEdit: true },
     ],
     canCreate: true,
+    canAdmin: true,
     isLocal: false,
     currentUserId: 'user-yash',
     refresh: vi.fn().mockResolvedValue(undefined),
@@ -420,7 +422,9 @@ describe('native workspace Tasks member and access interactions', () => {
     expect(state.value.updateTask).toHaveBeenCalledTimes(1);
     expect(state.openDoc).not.toHaveBeenCalled();
   });
-  test('read-only context documents are visibly unavailable and cannot be submitted', async () => {
+  test('members can link readable read-only documents to their own task', async () => {
+    state.value.canAdmin = false;
+    state.value.tasks = [ticket({ canAdmin: false, canLink: true })];
     state.value.contextDocs = state.value.readableDocs;
     state.value.readableDocs.push({
       id: 'read-only-source',
@@ -430,16 +434,45 @@ describe('native workspace Tasks member and access interactions', () => {
     render(<Component />);
     openTask();
     const source = dialog().getByLabelText('Context document');
-    const option = within(source).getByRole('option', {
-      name: 'Read-only context · read only',
-    }) as HTMLOptionElement;
-    expect(option.disabled).toBe(true);
+    expect(
+      (
+        within(source).getByRole('option', {
+          name: 'Read-only context',
+        }) as HTMLOptionElement
+      ).disabled
+    ).toBe(false);
     fireEvent.change(source, { target: { value: 'read-only-source' } });
     fireEvent.click(dialog().getByRole('button', { name: 'Save changes' }));
-    expect(state.value.linkDocument).not.toHaveBeenCalled();
-    expect(state.value.updateTask).not.toHaveBeenCalled();
-    expect(dialog().getByRole('alert').textContent).toContain(
-      'context document you can edit'
+    await waitFor(() =>
+      expect(state.value.linkDocument).toHaveBeenCalledWith(
+        'task-1',
+        'read-only-source'
+      )
+    );
+  });
+  test('members create a self-assigned task without assignment or priority controls', async () => {
+    state.value.canAdmin = false;
+    render(<Component />);
+    fireEvent.click(screen.getAllByRole('button', { name: /New task/ })[0]);
+    fireEvent.change(dialog().getByLabelText('Title'), {
+      target: { value: 'My new task' },
+    });
+    expect(dialog().getByTestId('member-display').textContent).toContain(
+      'user-yash'
+    );
+    expect(
+      (dialog().getByLabelText('Priority') as HTMLSelectElement).disabled
+    ).toBe(true);
+    fireEvent.click(dialog().getByRole('button', { name: 'Create task' }));
+    await waitFor(() =>
+      expect(state.value.createTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'My new task',
+          assigneeId: 'user-yash',
+          priority: 'normal',
+          dueDate: null,
+        })
+      )
     );
   });
   test('an untouched read-only dialog follows live status and owner changes', async () => {
@@ -552,7 +585,7 @@ describe('task conversation and owner-only controls', () => {
         .disabled
     ).toBe(true);
     expect(dialog().queryByRole('button', { name: 'Archive' })).toBeNull();
-    expect(dialog().queryByLabelText('Context document')).toBeNull();
+    expect(dialog().queryByLabelText('Context document')).not.toBeNull();
     expect(dialog().queryByTestId('member-selector')).toBeNull();
     fireEvent.click(dialog().getByRole('checkbox', { name: 'Read context' }));
     fireEvent.change(dialog().getByLabelText('Status'), {
