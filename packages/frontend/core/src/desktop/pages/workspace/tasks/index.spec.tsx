@@ -143,6 +143,7 @@ beforeEach(() => {
   state.value = {
     tasks: [ticket()],
     loading: false,
+    scanProgress: { completed: 1, total: 1 },
     error: null,
     readableDocs: [
       { id: 'source-1', title: 'Research context', canEdit: true },
@@ -172,6 +173,35 @@ afterEach(() => {
 });
 
 describe('native workspace Tasks member and access interactions', () => {
+  test('shows discovery progress and allows creation after access is verified', () => {
+    state.value.loading = true;
+    state.value.tasks = [];
+    state.value.scanProgress = { completed: 12, total: 229 };
+    render(<Component />);
+    expect(screen.getByRole('status').textContent).toContain(
+      'Checking documents: 12 of 229'
+    );
+    expect(screen.queryByText('Start with one small next step.')).toBeNull();
+    const create = screen.getByRole('button', { name: 'New task' });
+    expect(create.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(create);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+  test('keeps creation disabled until access is verified and retains visible tasks during refresh', () => {
+    state.value.loading = true;
+    state.value.canCreate = false;
+    state.value.scanProgress = { completed: 0, total: 0 };
+    render(<Component />);
+    expect(screen.getByRole('status').textContent).toBe(
+      'Checking workspace access…'
+    );
+    expect(
+      screen.getByRole('button', { name: 'New task' }).hasAttribute('disabled')
+    ).toBe(true);
+    expect(
+      screen.getByRole('button', { name: 'Review model evidence' })
+    ).toBeTruthy();
+  });
   test('delegation stores one real member ID and preserves pinned edit timestamp', async () => {
     render(<Component />);
     openTask();

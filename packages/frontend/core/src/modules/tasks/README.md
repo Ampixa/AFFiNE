@@ -17,13 +17,13 @@ Tasks are AFFiNE documents, not a separate application or database. The desktop 
 
 Cloud read/update checks run before access and writes; workspace and document access events invalidate displayed data. Assignment accepts only accepted workspace members and never grants document access. Source lists and related tasks only include readable documents. Local non-shared workspaces work offline and intentionally have no invented member directory.
 
-Discovery currently scans readable workspace documents and retains authorized opened documents and their transaction listeners while the view is mounted. Focus and periodic refresh pick up changes, with realtime invalidation for access changes. Discovery uses four concurrent workers; ordinary refreshes share an active scan instead of restarting it. A five-second document-load timeout exposes incomplete coverage while allowing other documents to finish. Large-workspace performance remains unmeasured. Newly readable cloud documents receive a targeted pull retry after a successful permission check; this does not reset global sync clocks or write to the remote document.
+Discovery reads authorized cloud snapshots into isolated Yjs documents while the view is mounted. Focus and periodic refresh recheck access. Two workers share an active scan rather than restarting it; a five-second snapshot-load timeout reports incomplete coverage. Realtime listeners cover actual tasks and linked sources and must be ready before those connections are published. Local/offline workspaces retain native document discovery. Production-scale acceptance is required before deploying this revision.
 
 Legacy preview `ampixa:task-links` entries and native references are detected and blocked from further linking, not silently deleted or migrated. The explicit Remove legacy links action removes matching current references and legacy map entries while preserving text, unrelated links and source documents. Earlier sync history and backups remain unchanged. Revocation hides further access; it cannot erase information a previously authorized client already downloaded. Source readers can see opaque relation tokens/counts, but those do not reveal unreadable task identities.
 
-## Verified locally
+## Initial synthetic-preview validation
 
-The current AFFiNE frontend was tested against an isolated cached backend release (`31392784ce0edc579c31ab26fffa1c3608b720ac`). Relevant authentication, permissions, sync, membership and realtime backend source matches this checkout. Only synthetic accounts and documents were used.
+The initial AFFiNE frontend was tested against an isolated cached backend release (`31392784ce0edc579c31ab26fffa1c3608b720ac`). Relevant authentication, permissions, sync, membership and realtime backend source matches this checkout. Only synthetic accounts and documents were used.
 
 Separate authenticated editor and reader browser sessions verified accepted-member assignment, My work, persisted status changes, reader controls and pending-invitee assignment rejection. While task details stayed open, an actual permission downgrade disabled editing and removed mutation controls; full revocation replaced the details with an unavailable message. Pristine reader details reflected remote status changes live.
 
@@ -43,4 +43,18 @@ Additional isolated server checks passed: 25 checks with five synthetic accounts
 - Review localization and agreed product wording.
 - Context removal, notifications, reviewer assignment, dependencies, custom workflow configuration and task-specific graph overlays are not part of this first preview.
 
-No production workspace data is copied into the preview. No backend deployment or schema migration is introduced by this feature.
+The initial synthetic preview used no production workspace data. The subsequent discovery fix adds an authenticated backend read endpoint but no schema migration. Production-scale validation uses a separate, private, credential-sanitized local replica.
+
+## Production-scale discovery safeguards
+
+Cloud discovery reads isolated Yjs snapshots through an authenticated, per-document authorized endpoint. It does not open the editor, run editor migrations, enqueue sync retries, record document visits, or compact pending updates into persisted snapshots. The endpoint merges pending updates in memory only. Explicit create/edit/link actions still use the ordinary document editor and fresh write-permission checks.
+
+Scanning is bounded to two concurrent documents and reports progress. Five-minute fallback scans pause in hidden tabs; focus refreshes are rate-limited, while permission events still invalidate access immediately. Creation becomes available after workspace permission verification instead of waiting for the full scan. The local storage observer applies updates only to isolated snapshots; it cannot publish them back. Large-workspace acceptance must include unchanged document contents and snapshot/update counts, limited database pools, responsiveness of existing documents, and access revocation while task details are open.
+
+## Production-scale replica evidence
+
+The Linux release checks passed 63 frontend/sync tests, 34 gateway tests and 128 backend tests. Seven authenticated HTTP checks confirmed per-document authorization, grant/revoke enforcement, no-store responses, and in-memory merging without persisted snapshot/history/analytics changes.
+
+A two-minute, non-admin browser discovery and refresh interval changed no snapshot bytes or metadata and created no pending updates or database errors. Six concurrent non-admin cold scans (two workers each) completed 4,140 requests in 36.2 seconds with expected permission denials, no pool/transaction timeouts, and approximately 302 MiB peak application memory under a 2 GiB/0.9-CPU limit. These are local observations, not production latency guarantees; shared-host CPU contention must be checked during rollout.
+
+Browser validation confirmed task creation, member assignment, context linking, status persistence, private context filtering, and live downgrade/revocation. It also exposed a missing durable sync acknowledgement for explicit writes; that follow-up requires renewed archive/restore and reload acceptance before deployment.
