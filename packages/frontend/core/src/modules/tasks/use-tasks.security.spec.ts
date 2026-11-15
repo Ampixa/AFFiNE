@@ -156,12 +156,64 @@ function setup() {
   };
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 beforeEach(() => {
   fixture.services = {};
 });
 
 describe('task security boundaries (mocked services, real hook and Yjs)', () => {
+  it('bounds concurrent loads and coalesces refreshes without starving a slow scan', async () => {
+    const f = setup();
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => {
+      finish = resolve;
+    });
+    for (let i = 0; i < 12; i++) {
+      const doc = f.addDoc(`slow-${i}`, `Task ${i}`, true);
+      f.grant(doc.id);
+      doc.waitForSyncReady.mockImplementation(() => gate);
+    }
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(f.docsService.open).toHaveBeenCalledTimes(4));
+    let refreshed!: Promise<void>;
+    await act(async () => {
+      refreshed = result.current.refresh();
+      window.dispatchEvent(new Event('focus'));
+      await Promise.resolve();
+    });
+    expect(f.docsService.open).toHaveBeenCalledTimes(4);
+    await act(async () => {
+      finish();
+      await refreshed;
+    });
+    await waitFor(() => expect(result.current.tasks).toHaveLength(12));
+    expect(result.current.loading).toBe(false);
+    expect(f.docsService.open).toHaveBeenCalledTimes(12);
+  });
+
+  it('finishes with explicit incomplete coverage when one document never loads', async () => {
+    vi.useFakeTimers();
+    const f = setup();
+    const slow = f.addDoc('unavailable', 'Unavailable', true);
+    slow.waitForSyncReady.mockImplementation(() => new Promise(() => {}));
+    f.grant(slow.id);
+    f.addDoc('available', 'Available task', true);
+    f.grant('available');
+    const { result } = renderHook(() => useTasks());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5001);
+    });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.tasks.map(task => task.id)).toEqual(['available']);
+    expect(result.current.error).toContain('may be incomplete');
+    expect(result.current.readableDocs.map(doc => doc.id)).toEqual([
+      'available',
+    ]);
+  });
+
   it('requests targeted cloud hydration only for authorized newly opened documents', async () => {
     const f = setup();
     const task = f.addDoc('allowed-task', 'Task');
