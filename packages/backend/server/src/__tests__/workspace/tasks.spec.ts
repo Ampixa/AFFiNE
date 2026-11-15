@@ -1,9 +1,10 @@
-import { ForbiddenException } from '@nestjs/common';
 import type { PrismaClient, WorkspaceTask } from '@prisma/client';
 import test from 'ava';
 import type { Request } from 'express';
 import { Array as YArray, Doc, encodeStateAsUpdate, Map } from 'yjs';
 
+import { ActionForbidden } from '../../base';
+import { mapAnyError } from '../../base/nestjs/exception';
 import type { CurrentUser } from '../../core/auth';
 import type { PgWorkspaceDocStorageAdapter } from '../../core/doc';
 import type { PermissionAccess } from '../../core/permission';
@@ -170,7 +171,7 @@ function fixture() {
       workspace: () => ({
         assert: async (action: string) => {
           if (action === 'Workspace.CreateDoc' && userId === 'reader')
-            throw new ForbiddenException();
+            throw new ActionForbidden();
         },
         can: async () => userId !== 'reader',
       }),
@@ -218,7 +219,7 @@ function fixture() {
 test('workspace guests cannot list tasks even if they can read a shared document', async t => {
   const f = fixture();
   await t.throwsAsync(() => f.service.list('guest', 'workspace'), {
-    instanceOf: ForbiddenException,
+    instanceOf: ActionForbidden,
   });
   t.deepEqual(f.calls, []);
 });
@@ -388,7 +389,7 @@ test('session mutations require a matching CSRF token before service execution',
   } as unknown as Request;
   t.throws(
     () => controller.create(user, 'workspace', request, { title: 'Task' }),
-    { instanceOf: ForbiddenException }
+    { instanceOf: ActionForbidden }
   );
   t.false(called);
 });
@@ -443,4 +444,42 @@ test('attaching an existing link is idempotent without revision or history churn
   t.is(result.updatedAt, 1000);
   t.is(f.row.version, 1);
   t.is(f.history.length, 1);
+});
+
+test('AFFiNE HTTP mapping preserves task denial, validation, missing and conflict statuses', async t => {
+  const f = fixture();
+  const cases: Array<[() => Promise<unknown>, number]> = [
+    [() => f.service.list('guest', 'workspace'), 403],
+    [() => f.service.create('member', 'workspace', { title: '' }), 400],
+    [() => f.service.get('member', 'workspace', 'missing'), 404],
+    [
+      () =>
+        f.service.update('member', 'workspace', 'task', {
+          title: 'stale',
+          expectedUpdatedAt: 999,
+        }),
+      409,
+    ],
+  ];
+  for (const [run, status] of cases) {
+    const error = await t.throwsAsync(run);
+    t.is(mapAnyError(error).status, status);
+    t.is(mapAnyError(error).toJSON().status, status);
+  }
+});
+
+test('AFFiNE HTTP mapping keeps failed CSRF a 403 rather than a server error', t => {
+  const f = fixture();
+  const controller = new WorkspaceTasksController(f.service);
+  const req = {
+    authType: 'session',
+    get: () => undefined,
+    cookies: {},
+  } as unknown as Request;
+  const error = t.throws(() =>
+    controller.create({ id: 'member' } as CurrentUser, 'workspace', req, {
+      title: 'Task',
+    })
+  );
+  t.is(mapAnyError(error).status, 403);
 });

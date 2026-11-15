@@ -1,14 +1,10 @@
 import {
-  BadRequestException,
   Body,
-  ConflictException,
   Controller,
   Delete,
-  ForbiddenException,
   Get,
   Header,
   Injectable,
-  NotFoundException,
   Param,
   Patch,
   Post,
@@ -20,7 +16,13 @@ import type { Request } from 'express';
 import { applyUpdate, Array as YArray, Doc as YDoc, Map as YMap } from 'yjs';
 import { z } from 'zod';
 
-import { getRequestCookie } from '../../base';
+import {
+  ActionForbidden,
+  BadRequest,
+  getRequestCookie,
+  HttpRequestError,
+  NotFound,
+} from '../../base';
 import { AuthService, CurrentUser } from '../auth';
 import { PgWorkspaceDocStorageAdapter } from '../doc';
 import { PermissionAccess } from '../permission';
@@ -64,8 +66,16 @@ const patchSchema = fields
 
 function parse<S extends z.ZodTypeAny>(schema: S, input: unknown): z.output<S> {
   const parsed = schema.safeParse(input);
-  if (!parsed.success) throw new BadRequestException('Invalid task fields.');
+  if (!parsed.success) throw new BadRequest('Invalid task fields.');
   return parsed.data;
+}
+
+function taskConflict(message: string) {
+  // AFFiNE maps unrecognized Nest HttpExceptions to 500. Use its HTTP error
+  // representation so optimistic-concurrency failures retain their 409 status.
+  const error = new HttpRequestError({ message });
+  error.status = 409;
+  return error;
 }
 
 function page(cursor?: string, limit?: string, maximum = 200) {
@@ -79,7 +89,7 @@ function page(cursor?: string, limit?: string, maximum = 200) {
     take < 1 ||
     take > maximum
   )
-    throw new BadRequestException('Invalid pagination.');
+    throw new BadRequest('Invalid pagination.');
   return { skip: offset, take };
 }
 
@@ -98,7 +108,7 @@ export class WorkspaceTasksService {
       where: { workspaceId, userId, state: 'active' },
       select: { id: true },
     });
-    if (!member) throw new ForbiddenException('Workspace membership required.');
+    if (!member) throw new ActionForbidden('Workspace membership required.');
     await this.ac
       .user(userId)
       .workspace(workspaceId)
@@ -156,7 +166,7 @@ export class WorkspaceTasksService {
             write
           ))))
     )
-      throw new NotFoundException('Task unavailable.');
+      throw new NotFound('Task unavailable.');
     return task;
   }
 
@@ -175,9 +185,7 @@ export class WorkspaceTasksService {
       (legacyDocId &&
         !(await this.docAllowed(userId, workspaceId, legacyDocId)))
     )
-      throw new BadRequestException(
-        'Choose an active member with task access.'
-      );
+      throw new BadRequest('Choose an active member with task access.');
   }
 
   private validateState(value: {
@@ -186,13 +194,13 @@ export class WorkspaceTasksService {
     dueDate?: string | null;
   }) {
     if (value.status === 'blocked' && !value.blockedReason.trim())
-      throw new BadRequestException('Explain what is blocking this task.');
+      throw new BadRequest('Explain what is blocking this task.');
     if (
       value.dueDate &&
       (Number.isNaN(Date.parse(value.dueDate)) ||
         new Date(value.dueDate).toISOString().slice(0, 10) !== value.dueDate)
     )
-      throw new BadRequestException('Choose a valid target date.');
+      throw new BadRequest('Choose a valid target date.');
   }
 
   private async linkedDocs(userId: string, workspaceId: string, ids: string[]) {
@@ -268,7 +276,7 @@ export class WorkspaceTasksService {
   ) {
     await this.access(userId, workspaceId);
     if (docId && !(await this.docAllowed(userId, workspaceId, docId)))
-      throw new NotFoundException('Document unavailable.');
+      throw new NotFound('Document unavailable.');
     const paging = page(cursor, limit);
     const rows = await this.db.workspaceTask.findMany({
       where: { workspaceId, ...(docId ? { links: { some: { docId } } } : {}) },
@@ -347,8 +355,7 @@ export class WorkspaceTasksService {
     cursor?: string
   ) {
     await this.access(userId, workspaceId);
-    if (query.length > 200)
-      throw new BadRequestException('Search is too long.');
+    if (query.length > 200) throw new BadRequest('Search is too long.');
     const paging = page(cursor, '50', 50);
     const activeIds = await this.activeDocumentIds(workspaceId);
     const rows = await this.db.workspaceDoc.findMany({
@@ -377,7 +384,7 @@ export class WorkspaceTasksService {
     // Only the optional context picker/link action reads root metadata. Task
     // listing never opens or scans document snapshots.
     const binary = await this.storage.getDocBinNative(workspaceId, workspaceId);
-    if (!binary) throw new NotFoundException('Document metadata unavailable.');
+    if (!binary) throw new NotFound('Document metadata unavailable.');
     const root = new YDoc();
     try {
       applyUpdate(root, binary);
@@ -402,7 +409,7 @@ export class WorkspaceTasksService {
     activeIds?: ReadonlySet<string>
   ) {
     if (!(activeIds ?? (await this.activeDocumentIds(workspaceId))).has(docId))
-      throw new NotFoundException('Editable document unavailable.');
+      throw new NotFound('Editable document unavailable.');
     const doc = await this.db.workspaceDoc.findUnique({
       where: { workspaceId_docId: { workspaceId, docId } },
       select: { blocked: true },
@@ -412,7 +419,7 @@ export class WorkspaceTasksService {
       doc.blocked ||
       !(await this.docAllowed(userId, workspaceId, docId, true))
     )
-      throw new NotFoundException('Editable document unavailable.');
+      throw new NotFound('Editable document unavailable.');
   }
 
   async create(userId: string, workspaceId: string, input: unknown) {
@@ -455,7 +462,7 @@ export class WorkspaceTasksService {
     const row = await this.task(userId, workspaceId, id, true);
     const { expectedUpdatedAt, ...patch } = parse(patchSchema, input);
     if (!Object.keys(patch).length)
-      throw new BadRequestException('No task changes provided.');
+      throw new BadRequest('No task changes provided.');
     this.validateState({ ...row, ...patch });
     await this.assignee(workspaceId, patch.assigneeId, row.legacyDocId);
     await this.db.$transaction(async tx => {
@@ -476,7 +483,7 @@ export class WorkspaceTasksService {
         },
       });
       if (changed.count !== 1)
-        throw new ConflictException('Task changed. Refresh before saving.');
+        throw taskConflict('Task changed. Refresh before saving.');
       await tx.taskActivity.create({
         data: {
           taskId: id,
@@ -514,12 +521,12 @@ export class WorkspaceTasksService {
         },
       });
       if (changed.count !== 1)
-        throw new ConflictException('Task changed. Refresh before linking.');
+        throw taskConflict('Task changed. Refresh before linking.');
       if (remove)
         await tx.taskDocumentLink.deleteMany({ where: { taskId: id, docId } });
       else {
         if ((await tx.taskDocumentLink.count({ where: { taskId: id } })) >= 20)
-          throw new BadRequestException('A task can link up to 20 documents.');
+          throw new BadRequest('A task can link up to 20 documents.');
         await tx.taskDocumentLink.upsert({
           where: { taskId_docId: { taskId: id, docId } },
           create: { taskId: id, docId },
@@ -547,7 +554,7 @@ export class WorkspaceTasksController {
     if (req.authType === 'jwt') return;
     const token = req.get('x-affine-csrf-token');
     if (!token || token !== getRequestCookie(req, AuthService.csrfCookieName))
-      throw new ForbiddenException('CSRF verification failed.');
+      throw new ActionForbidden('CSRF verification failed.');
   }
 
   @Header('Cache-Control', 'private, no-store')
