@@ -191,6 +191,7 @@ function setup() {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 beforeEach(() => {
   fixture.services = {};
@@ -380,6 +381,74 @@ describe('task security boundaries (mocked services, real hook and Yjs)', () => 
     expect(result.current.loading).toBe(false);
     expect(f.fetch).toHaveBeenCalledTimes(12);
     expect(f.docsService.open).not.toHaveBeenCalled();
+  });
+
+  it('skips hidden fallback sweeps but still invalidates revoked task access', async () => {
+    const f = setup();
+    f.addDoc('task', 'Task', true);
+    f.grant('task');
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useTasks());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.tasks).toHaveLength(1);
+    const visibility = vi.spyOn(document, 'visibilityState', 'get');
+    visibility.mockReturnValue('hidden');
+    const can = fixture.services.guardService.can;
+    can.mockClear();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(can).not.toHaveBeenCalled();
+    await act(async () => {
+      f.permissions.set('Doc_Read:task', false);
+      f.event('doc.share-state.changed', 'task').next({ type: 'changed' });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.tasks).toEqual([]);
+    expect(can).toHaveBeenCalledWith('Doc_Read', 'task');
+  });
+
+  it('uses five-minute visible sweeps and bounds focus refreshes without blocking explicit refresh', async () => {
+    const f = setup();
+    f.addDoc('task', 'Task', true);
+    f.grant('task');
+    vi.useFakeTimers();
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    const { result } = renderHook(() => useTasks());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.tasks).toHaveLength(1);
+    const can = fixture.services.guardService.can;
+    can.mockClear();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(299999);
+    });
+    expect(can).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(can).toHaveBeenCalledWith('Doc_Read', 'task');
+    can.mockClear();
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(can).not.toHaveBeenCalled();
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(can).toHaveBeenCalledWith('Doc_Read', 'task');
+    can.mockClear();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+      window.dispatchEvent(new Event('focus'));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(can).toHaveBeenCalledWith('Doc_Read', 'task');
   });
 
   it('finishes with explicit incomplete coverage when one document never loads', async () => {

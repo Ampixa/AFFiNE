@@ -491,11 +491,20 @@ export function useTasks() {
             applyUpdate(snapshot, update.bin, 'task-storage-update');
         });
     void refresh().catch(reportRefreshError);
-    const timer = setInterval(
-      () => void refresh().catch(reportRefreshError),
-      30000
-    );
-    const onFocus = () => void refresh().catch(reportRefreshError);
+    // Realtime access events remain immediate. Full-workspace sweeps are only
+    // a fallback: avoid repeated ACL traffic from idle tabs and focus flapping.
+    let lastBackgroundRefresh = Date.now();
+    const backgroundRefresh = () => {
+      if (
+        document.visibilityState === 'hidden' ||
+        Date.now() - lastBackgroundRefresh < 30000
+      )
+        return;
+      lastBackgroundRefresh = Date.now();
+      void refresh().catch(reportRefreshError);
+    };
+    const timer = setInterval(backgroundRefresh, 5 * 60 * 1000);
+    const onFocus = backgroundRefresh;
     window.addEventListener('focus', onFocus);
     let accessReady = false;
     const accessSubscription = isLocal
