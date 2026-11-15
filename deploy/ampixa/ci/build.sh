@@ -44,7 +44,11 @@ fi
 yarn vitest run --maxWorkers=2 \
   packages/frontend/core/src/blocksuite/ai/messages/error.spec.ts \
   packages/frontend/core/src/blocksuite/ai/components/ai-tools/doc-write.spec.ts \
-  packages/frontend/core/src/blocksuite/ai/runtime/request/copilot-client.spec.ts
+  packages/frontend/core/src/blocksuite/ai/runtime/request/copilot-client.spec.ts \
+  packages/frontend/core/src/modules/tasks/model.spec.ts \
+  packages/frontend/core/src/modules/tasks/use-tasks.security.spec.ts \
+  packages/frontend/core/src/desktop/pages/workspace/tasks/index.spec.tsx \
+  packages/common/nbstore/src/__tests__/sync.spec.ts
 node deploy/ampixa/ci/verify-native.cjs packages/backend/server/dist/server-native.x64.node
 node --test deploy/ampixa/claude-files/gateway.test.mjs deploy/ampixa/enable-search.test.mjs
 node deploy/ampixa/claude-files/memory-smoke.mjs
