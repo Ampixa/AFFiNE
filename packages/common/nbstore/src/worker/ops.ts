@@ -90,6 +90,7 @@ interface GroupedWorkerOps {
     docState: [string, DocSyncDocState];
     waitForSynced: [string | null, void];
     addPriority: [{ docId: string; priority: number }, boolean];
+    retryDoc: [string, void];
     resetSync: [void, void];
   };
 

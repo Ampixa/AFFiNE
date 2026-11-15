@@ -17,6 +17,7 @@ import type {
 import { DocLinksService } from '@affine/core/modules/doc-link';
 import { ConnectionsButton } from '@affine/core/modules/doc-link/views/graph/connections-button';
 import { GuardService } from '@affine/core/modules/permissions';
+import { RelatedTasksButton } from '@affine/core/modules/tasks/related-tasks';
 import { WorkspacePropertyService } from '@affine/core/modules/workspace-property';
 import { useI18n } from '@affine/i18n';
 import track from '@affine/track';
@@ -170,6 +171,7 @@ export const InfoTable = ({
         backlinks={backlinks ?? []}
         onNavigate={onClose}
       />
+      <RelatedTasksButton docId={docId} onNavigate={onClose} />
       {backlinks && backlinks.length > 0 ? (
         <>
           <LinksRow

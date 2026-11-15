@@ -39,6 +39,7 @@ export interface DocSync {
   docState$(docId: string): Observable<DocSyncDocState>;
   waitForSynced(docId?: string, abort?: AbortSignal): Promise<void>;
   addPriority(id: string, priority: number): () => void;
+  retryDoc(docId: string): Promise<void>;
   resetSync(): Promise<void>;
 }
 
@@ -172,6 +173,10 @@ export class DocSyncImpl implements DocSync {
   addPriority(id: string, priority: number) {
     const undo = this.peers.map(peer => peer.addPriority(id, priority));
     return () => undo.forEach(fn => fn());
+  }
+
+  async retryDoc(docId: string) {
+    this.peers.forEach(peer => peer.retryDoc(docId));
   }
 
   async resetSync() {
