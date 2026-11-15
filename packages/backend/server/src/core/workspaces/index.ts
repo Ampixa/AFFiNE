@@ -27,6 +27,7 @@ import {
 import { AdminWorkspaceResolver } from './resolvers/admin';
 import { WorkspaceService } from './service';
 import { WorkspaceStatsJob } from './stats.job';
+import { WorkspaceTasksController, WorkspaceTasksService } from './tasks';
 
 @Module({
   imports: [
@@ -41,7 +42,7 @@ import { WorkspaceStatsJob } from './stats.job';
     MailModule,
     WorkspaceRealtimeModule,
   ],
-  controllers: [WorkspacesController],
+  controllers: [WorkspacesController, WorkspaceTasksController],
   providers: [
     WorkspaceResolver,
     WorkspaceMemberResolver,
@@ -50,6 +51,7 @@ import { WorkspaceStatsJob } from './stats.job';
     DocHistoryResolver,
     WorkspaceBlobResolver,
     WorkspaceService,
+    WorkspaceTasksService,
     InviteAbuseDispositionService,
     InviteQuotaAssertService,
     WorkspaceEvents,

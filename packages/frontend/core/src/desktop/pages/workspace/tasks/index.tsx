@@ -1,4 +1,4 @@
-import { Button, ConfirmModal, Modal } from '@affine/component';
+import { Button, Modal } from '@affine/component';
 import { MemberSelectorInline } from '@affine/core/components/member-selector';
 import type {
   Task,
@@ -18,7 +18,8 @@ import {
 } from '@affine/core/modules/workbench/view/view-meta';
 import { CheckBoxCheckLinearIcon, PlusIcon } from '@blocksuite/icons/rc';
 import { useService } from '@toeverything/infra';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import * as styles from './index.css';
 
@@ -44,10 +45,17 @@ const colors: Record<TaskStatus, string> = {
 };
 type Draft = Pick<
   Task,
-  'title' | 'status' | 'assigneeId' | 'priority' | 'dueDate' | 'blockedReason'
+  | 'title'
+  | 'description'
+  | 'status'
+  | 'assigneeId'
+  | 'priority'
+  | 'dueDate'
+  | 'blockedReason'
 >;
 const emptyDraft = (): Draft => ({
   title: '',
+  description: '',
   status: 'inbox',
   assigneeId: null,
   priority: 'normal',
@@ -56,6 +64,7 @@ const emptyDraft = (): Draft => ({
 });
 const taskDraft = (task: Task): Draft => ({
   title: task.title,
+  description: task.description ?? '',
   status: task.status,
   assigneeId: task.assigneeId,
   priority: task.priority,
@@ -72,6 +81,9 @@ const dateLabel = (date: string | null) =>
 
 export const Component = () => {
   const workspace = useTasks();
+  const [searchParams] = useSearchParams();
+  const requestedTaskId = searchParams.get('task');
+  const openedTaskId = useRef<string | null>(null);
   const workbench = useService(WorkbenchService).workbench;
   const [scope, setScope] = useState('all');
   const [view, setView] = useState<'list' | 'board'>('list');
@@ -84,7 +96,6 @@ export const Component = () => {
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [sourceId, setSourceId] = useState('');
   const [busy, setBusy] = useState(false);
-  const [confirmCleanup, setConfirmCleanup] = useState(false);
   const [formError, setFormError] = useState('');
   const [notice, setNotice] = useState('');
   const [initialDraft, setInitialDraft] = useState('');
@@ -133,11 +144,26 @@ export const Component = () => {
     }),
     [workspace.tasks]
   );
-  const sourceDocs = workspace.readableDocs.filter(
+  const sourceDocs = workspace.contextDocs.filter(
     d =>
       d.id !== selected?.id &&
       d.title.toLowerCase().includes(documentSearch.toLowerCase())
   );
+  const { searchDocuments, loadTask } = workspace;
+  const selectedId = selected?.id;
+  useEffect(() => {
+    if (!open) return;
+    const timer = setTimeout(() => void searchDocuments(documentSearch), 250);
+    return () => clearTimeout(timer);
+  }, [open, documentSearch, searchDocuments]);
+  useEffect(() => {
+    if (!open || !selectedId) return;
+    void loadTask(selectedId).catch(() =>
+      setFormError(
+        'Could not refresh task details. Close and reopen to verify access.'
+      )
+    );
+  }, [open, selectedId, loadTask]);
   const current = selected
     ? workspace.tasks.find(t => t.id === selected.id)
     : null;
@@ -167,6 +193,25 @@ export const Component = () => {
     setDocumentSearch('');
     setOpen(true);
   };
+  useEffect(() => {
+    if (
+      !requestedTaskId ||
+      openedTaskId.current === requestedTaskId ||
+      workspace.loading
+    )
+      return;
+    const task = workspace.tasks.find(value => value.id === requestedTaskId);
+    if (!task) return;
+    openedTaskId.current = requestedTaskId;
+    const next = taskDraft(task);
+    setSelected(task);
+    setDraft(next);
+    setInitialDraft(JSON.stringify(next));
+    setSourceId('');
+    setFormError('');
+    setDocumentSearch('');
+    setOpen(true);
+  }, [requestedTaskId, workspace.loading, workspace.tasks]);
   const close = () => {
     if (busy) return;
     if (dirty && !window.confirm('Discard your unsaved task changes?')) return;
@@ -178,14 +223,8 @@ export const Component = () => {
     if (!editable || busy) return;
     if (sourceId) {
       const source = workspace.readableDocs.find(doc => doc.id === sourceId);
-      if (
-        current?.legacyLinksDetected ||
-        !source ||
-        !('canEdit' in source && source.canEdit === true)
-      ) {
-        setFormError(
-          'Choose a context document you can edit. Legacy task links must be reviewed before adding more.'
-        );
+      if (!source || !('canEdit' in source && source.canEdit === true)) {
+        setFormError('Choose a context document you can edit.');
         return;
       }
     }
@@ -220,11 +259,7 @@ export const Component = () => {
         });
       }
       setOpen(false);
-      setNotice(
-        selected
-          ? 'Task updated.'
-          : 'Task created. Open its document to add detail, checklist items, and comments.'
-      );
+      setNotice(selected ? 'Task updated.' : 'Task created.');
     } catch (e) {
       if (e && typeof e === 'object' && 'createdTask' in e) {
         setSelected(e.createdTask as Task);
@@ -234,26 +269,6 @@ export const Component = () => {
         e instanceof Error
           ? e.message
           : 'Could not save this task. Your draft is preserved.'
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-  const removeLegacyLinks = async () => {
-    if (!selected || !editable || busy) return;
-    setBusy(true);
-    setFormError('');
-    try {
-      const cleaned = await workspace.removeLegacyLinks(selected.id);
-      setSelected(cleaned);
-      setNotice(
-        'Current legacy links removed. Task text and unrelated links were kept; historical copies may still retain removed references.'
-      );
-    } catch (error) {
-      setFormError(
-        error instanceof Error
-          ? error.message
-          : 'Could not remove legacy links.'
       );
     } finally {
       setBusy(false);
@@ -346,8 +361,8 @@ export const Component = () => {
           </div>
           {workspace.isLocal && (
             <div className={styles.alert}>
-              Local workspace preview. Document tasks persist here; real team
-              assignment is available in a signed-in shared workspace.
+              Team tasks require a signed-in workspace. Existing local task
+              documents are unchanged and remain available in All docs.
             </div>
           )}
           {workspace.error && (
@@ -454,9 +469,7 @@ export const Component = () => {
           </div>
           {workspace.loading && (
             <p className={styles.muted} role="status">
-              {workspace.scanProgress.total > 0
-                ? `Checking documents: ${workspace.scanProgress.completed} of ${workspace.scanProgress.total}…`
-                : 'Checking workspace access…'}
+              Loading tasks…
             </p>
           )}
           {!filtered.length ? (
@@ -468,8 +481,8 @@ export const Component = () => {
                     : 'Start with one small next step.'}
                 </h3>
                 <p>
-                  Each task is an AFFiNE document. Link the context, choose an
-                  owner, and keep work moving.
+                  Create a task, choose an owner, and link supporting documents
+                  when you need them.
                 </p>
                 <Button
                   variant="primary"
@@ -578,7 +591,7 @@ export const Component = () => {
           <div role="alert" className={styles.alert}>
             {workspace.loading
               ? 'Checking task access…'
-              : 'This task is no longer available in your accessible documents.'}
+              : 'This task is no longer available to you.'}
             <Button variant="plain" onClick={() => setOpen(false)}>
               Close
             </Button>
@@ -671,44 +684,28 @@ export const Component = () => {
                   />
                 </label>
               )}
-              <div className={styles.editorNote}>
-                Description, checklist steps, files, and discussion use this
-                task’s ordinary AFFiNE document.{' '}
-                {selected
-                  ? 'Open the document to work on the details.'
-                  : 'Create the task, then open its document to add details.'}
-              </div>
-              {current?.legacyLinksDetected && (
-                <div className={styles.alert} role="alert">
-                  This task contains links from an earlier implementation. Its
-                  document content or sync history may still contain those
-                  references. New context links are disabled. Ask a workspace
-                  owner to review its access and create a fresh task before
-                  sharing more widely; existing data is not removed
-                  automatically.
-                  {editable && (
-                    <Button
-                      variant="plain"
-                      disabled={busy}
-                      onClick={() => setConfirmCleanup(true)}
-                    >
-                      Remove legacy links
-                    </Button>
-                  )}
-                </div>
-              )}
-              {editable && !current?.legacyLinksDetected && (
+              <label className={styles.field}>
+                Description
+                <textarea
+                  className={styles.control}
+                  value={draft.description ?? ''}
+                  disabled={!editable || busy}
+                  maxLength={20000}
+                  rows={5}
+                  placeholder="Describe the work, acceptance criteria, or next steps…"
+                  onChange={e => set('description', e.target.value)}
+                />
+              </label>
+              {editable && (
                 <div className={styles.field}>
                   Link a context document · optional
                   <span className={styles.muted}>
-                    Linking requires edit access to both this task and the
-                    context document. Read-only documents cannot be linked.
-                    Context links appear in Related tasks; they are not graph
-                    edges.
+                    Linked documents keep their own access permissions. Linking
+                    does not grant anyone access to a private document.
                   </span>
                   <input
                     className={styles.control}
-                    placeholder="Find a document…"
+                    placeholder="Type at least two characters…"
                     aria-label="Find context document"
                     value={documentSearch}
                     onChange={e => setDocumentSearch(e.target.value)}
@@ -736,6 +733,18 @@ export const Component = () => {
                         </option>
                       ))}
                   </select>
+                  {workspace.contextLoading && (
+                    <span role="status">Searching documents…</span>
+                  )}
+                  {workspace.hasMoreContext && (
+                    <Button
+                      variant="plain"
+                      disabled={workspace.contextLoading}
+                      onClick={() => void workspace.loadMoreDocuments()}
+                    >
+                      Load more documents
+                    </Button>
+                  )}
                 </div>
               )}
               {formError && (
@@ -764,12 +773,16 @@ export const Component = () => {
                 </div>
                 {selected && (
                   <div className={styles.actionGroup}>
-                    <Button
-                      disabled={busy}
-                      onClick={() => openDoc(selected.id)}
-                    >
-                      Open document
-                    </Button>
+                    {current?.detailDocId && (
+                      <Button
+                        disabled={busy}
+                        onClick={() =>
+                          current.detailDocId && openDoc(current.detailDocId)
+                        }
+                      >
+                        Open original document
+                      </Button>
+                    )}
                     {editable && (
                       <Button
                         variant="plain"
@@ -830,21 +843,6 @@ export const Component = () => {
           </>
         )}
       </Modal>
-      <ConfirmModal
-        open={confirmCleanup}
-        onOpenChange={setConfirmCleanup}
-        title="Remove legacy links?"
-        description="This keeps task text and unrelated links. Old sync history and backups may retain removed references."
-        confirmText="Remove links"
-        cancelText="Keep links"
-        autoFocusConfirm={false}
-        confirmButtonOptions={{ variant: 'error', disabled: busy }}
-        onCancel={() => setConfirmCleanup(false)}
-        onConfirm={async () => {
-          setConfirmCleanup(false);
-          await removeLegacyLinks();
-        }}
-      />
     </>
   );
 };

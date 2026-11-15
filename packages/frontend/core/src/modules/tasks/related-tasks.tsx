@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 
 import { useTasks } from './use-tasks';
 
-/** Uses the same native task documents as the workspace Tasks view. */
+/** Reads task rows linked to this document, without scanning document bodies. */
 export function RelatedTasksButton({
   docId,
   onNavigate,
@@ -65,7 +65,8 @@ function RelatedTasksPanel({
     linkDocument,
     isLocal,
     readableDocs,
-  } = useTasks();
+    loadTask,
+  } = useTasks({ docId });
   const canReadSource = isLocal
     ? readableDocs.some(doc => doc.id === docId)
     : cloudReadAccess;
@@ -104,13 +105,12 @@ function RelatedTasksPanel({
     try {
       if (
         !isLocal &&
-        (!(await guardService.can('Doc_Read', docId)) ||
-          !(await guardService.can('Doc_Read', id)))
+        (!(await guardService.can('Doc_Read', docId)) || !(await loadTask(id)))
       ) {
         throw new Error('This document or task is no longer accessible.');
       }
       onNavigate();
-      workbenchService.workbench.openDoc(id);
+      workbenchService.workbench.open('/tasks?task=' + encodeURIComponent(id));
     } catch (cause) {
       setActionError(
         cause instanceof Error ? cause.message : 'Could not open this task.'
@@ -123,7 +123,8 @@ function RelatedTasksPanel({
       <div>
         <h2 style={{ margin: '0 0 8px', fontSize: 20 }}>Related tasks</h2>
         <p style={{ margin: 0, color: cssVarV2('text/secondary') }}>
-          Work linked to this document. Each task opens in the normal editor.
+          Work linked to this document. Open a task to see its owner, status and
+          details.
         </p>
       </div>
       {actionError || error ? <p role="alert">{actionError || error}</p> : null}
