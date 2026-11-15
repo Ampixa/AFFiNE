@@ -581,6 +581,25 @@ export function useTasks() {
     },
     [currentUserId, isLocal, nbstoreService, workspace.id]
   );
+  const acknowledgeWrite = useCallback(
+    async (id: string) => {
+      if (isLocal) return;
+      try {
+        await workspace.engine.doc.waitForSynced(
+          id,
+          AbortSignal.timeout(15000)
+        );
+      } catch {
+        // Keep the local change for native sync to recover; never retry the
+        // mutation or claim the server has saved an unacknowledged change.
+        const message =
+          'Change saved locally, but server sync was not confirmed. Keep this tab open and check your connection before leaving.';
+        setError(message);
+        throw new Error(message);
+      }
+    },
+    [isLocal, workspace.engine.doc]
+  );
   const withWritable = useCallback(
     async (id: string, action: (doc: Doc) => Promise<void> | void) => {
       if (!isLocal)
@@ -596,6 +615,7 @@ export function useTasks() {
         if (!(await allowed('Doc_Update', id)))
           throw new Error('Task editing access changed.');
         await action(opened.doc);
+        await acknowledgeWrite(id);
         const snapshot = snapshots.current.get(id);
         if (snapshot)
           applyUpdate(
@@ -608,7 +628,14 @@ export function useTasks() {
       }
       await refresh();
     },
-    [allowed, docsService, isLocal, refresh, workspacePermissionService]
+    [
+      acknowledgeWrite,
+      allowed,
+      docsService,
+      isLocal,
+      refresh,
+      workspacePermissionService,
+    ]
   );
   const audit = useCallback(
     (doc: Doc, body: string) =>
@@ -657,6 +684,7 @@ export function useTasks() {
           // The token cannot identify a task without access to its document.
           // Neither endpoint stores the other document's ID or title.
           source.yDoc.getMap(SOURCE_TASKS_MAP).set(token as string, true);
+          await acknowledgeWrite(taskId);
           const snapshot = snapshots.current.get(taskId);
           if (snapshot)
             applyUpdate(
@@ -669,7 +697,7 @@ export function useTasks() {
         }
       });
     },
-    [allowed, docsService, withWritable]
+    [acknowledgeWrite, allowed, docsService, withWritable]
   );
   const updateTask = useCallback(
     async (id: string, patch: TaskPatch, expectedUpdatedAt?: number) => {

@@ -383,6 +383,83 @@ describe('task security boundaries (mocked services, real hook and Yjs)', () => 
     expect(f.docsService.open).not.toHaveBeenCalled();
   });
 
+  it('waits for cloud acknowledgement before completing an explicit task update', async () => {
+    const f = setup();
+    f.addDoc('task', 'Task', true);
+    f.grant('task', true);
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.tasks).toHaveLength(1));
+    let acknowledge!: () => void;
+    const sync =
+      fixture.services.workspaceService.workspace.engine.doc.waitForSynced;
+    sync.mockImplementation(
+      () =>
+        new Promise<void>(resolve => {
+          acknowledge = resolve;
+        })
+    );
+    let completed = false;
+    let operation!: Promise<unknown>;
+    await act(async () => {
+      operation = result.current
+        .updateTask('task', { archived: true })
+        .then(value => {
+          completed = true;
+          return value;
+        });
+    });
+    await waitFor(() =>
+      expect(sync).toHaveBeenCalledWith('task', expect.any(AbortSignal))
+    );
+    expect(completed).toBe(false);
+    const opened = f.docsService.open.mock.results.at(-1)!.value;
+    expect(opened.release).not.toHaveBeenCalled();
+    await act(async () => {
+      acknowledge();
+      await operation;
+    });
+    expect(completed).toBe(true);
+    expect(opened.release).toHaveBeenCalledOnce();
+  });
+
+  it('acknowledges both documents before completing a new task-context link', async () => {
+    const f = setup();
+    f.addDoc('task', 'Task', true);
+    f.addDoc('source', 'Context');
+    f.grant('task', true);
+    f.grant('source', true);
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.tasks).toHaveLength(1));
+    const sync =
+      fixture.services.workspaceService.workspace.engine.doc.waitForSynced;
+    await act(async () => {
+      await result.current.linkDocument('task', 'source');
+    });
+    expect(sync.mock.calls.map((call: unknown[]) => call[0])).toEqual([
+      'task',
+      'source',
+    ]);
+  });
+
+  it('reports unconfirmed cloud writes as failures and preserves the local change without retrying', async () => {
+    const f = setup();
+    const doc = f.addDoc('task', 'Task', true);
+    f.grant('task', true);
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.tasks).toHaveLength(1));
+    const sync =
+      fixture.services.workspaceService.workspace.engine.doc.waitForSynced;
+    sync.mockRejectedValue(new Error('timeout'));
+    await act(async () => {
+      await expect(
+        result.current.updateTask('task', { archived: true })
+      ).rejects.toThrow('server sync was not confirmed');
+    });
+    expect(sync).toHaveBeenCalledOnce();
+    expect(doc.yDoc.getMap(TASK_MAP).get('archived')).toBe(true);
+    expect(result.current.error).toContain('saved locally');
+  });
+
   it('skips hidden fallback sweeps but still invalidates revoked task access', async () => {
     const f = setup();
     f.addDoc('task', 'Task', true);
