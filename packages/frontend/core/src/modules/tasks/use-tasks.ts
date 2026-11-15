@@ -47,6 +47,7 @@ export function useTasks() {
     WorkspacePermissionService,
   });
   const ids = useLiveData(docsService.list.nonTrashDocsIds$);
+  const idsKey = ids.join('\n');
   const workspace = workspaceService.workspace;
   const isLocal =
     workspace.flavour === 'local' && !workspace.openOptions.isSharedMode;
@@ -131,6 +132,9 @@ export function useTasks() {
     }
   }, []);
   const refresh = useCallback(async () => {
+    // Ordinary refreshes must not restart a slow scan. Access events explicitly
+    // clear this promise and invalidate its generation before rechecking.
+    if (scanning.current) return scanning.current;
     const token = ++generation.current;
     const active = () => mounted.current && generation.current === token;
     const run = (async () => {
@@ -143,18 +147,19 @@ export function useTasks() {
           (isLocal || (await guardService.can('Workspace_CreateDoc')));
         const visible: { id: string; title: string; canEdit: boolean }[] = [];
         const readable = new Set<string>();
-        for (const id of docsService.list.nonTrashDocsIds$.value) {
+        let incomplete = false;
+        const scanDoc = async (id: string) => {
           if (!active()) return;
           const canRead = await allowed('Doc_Read', id);
           if (!active()) return;
           if (!canRead) {
             drop(id);
-            continue;
+            return;
           }
           const record = docsService.list.doc$(id).value;
           if (!record || record.trash$.value) {
             drop(id);
-            continue;
+            return;
           }
           const canEditSource = await allowed('Doc_Update', id);
           if (!active()) return;
@@ -171,14 +176,36 @@ export function useTasks() {
               // A newly granted document may be absent from incremental remote
               // clocks, or have a cached permission error. Re-request only this
               // authorized document once when opening it, never on each scan.
-              if (!isLocal) await workspace.engine.doc.retryDoc(id);
-              await opened.doc.waitForSyncReady();
+              let loadTimer: ReturnType<typeof setTimeout> | undefined;
+              let loaded: boolean;
+              try {
+                loaded = await Promise.race([
+                  (async () => {
+                    if (!isLocal) await workspace.engine.doc.retryDoc(id);
+                    await opened.doc.waitForSyncReady();
+                    return true;
+                  })(),
+                  new Promise<false>(resolve => {
+                    loadTimer = setTimeout(() => resolve(false), 5000);
+                  }),
+                ]);
+              } finally {
+                clearTimeout(loadTimer);
+              }
+              if (!loaded) {
+                opened.release();
+                readable.delete(id);
+                const index = visible.findIndex(item => item.id === id);
+                if (index >= 0) visible.splice(index, 1);
+                incomplete = true;
+                return;
+              }
               if (!active() || !(await allowed('Doc_Read', id))) {
                 opened.release();
                 readable.delete(id);
                 const index = visible.findIndex(item => item.id === id);
                 if (index >= 0) visible.splice(index, 1);
-                continue;
+                return;
               }
               // Load-ready may precede remote hydration. Keep authorized docs
               // observed so later task fields or source relations become visible.
@@ -206,16 +233,33 @@ export function useTasks() {
             if (!active()) return;
             entry.canEdit = canEdit;
           }
-        }
+        };
+        const pendingIds = [...docsService.list.nonTrashDocsIds$.value];
+        let next = 0;
+        // Bound network and document-loading work without serializing the whole
+        // workspace behind one round trip per permission check.
+        await Promise.all(
+          Array.from({ length: Math.min(4, pendingIds.length) }, async () => {
+            while (active() && next < pendingIds.length) {
+              await scanDoc(pendingIds[next++]);
+            }
+          })
+        );
         if (!active()) return;
         for (const id of held.current.keys()) if (!readable.has(id)) drop(id);
         readableIds.current = readable;
         setReadableDocs(visible);
         setCanCreate(create);
-        setError(null);
+        setError(
+          incomplete
+            ? 'Some documents are still syncing. Task results may be incomplete; refresh to retry.'
+            : null
+        );
         publish();
       } catch {
         if (active()) {
+          generation.current++;
+          setLoading(false);
           setError(
             'Could not verify task access. Please refresh and try again.'
           );
@@ -296,7 +340,7 @@ export function useTasks() {
   }, [
     currentUserId,
     drop,
-    ids,
+    idsKey,
     isLocal,
     nbstoreService,
     refresh,
