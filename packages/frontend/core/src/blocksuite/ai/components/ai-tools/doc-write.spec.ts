@@ -6,15 +6,17 @@ import { DocWriteTool } from './doc-write';
 const service = vi.hoisted(() => ({
   waitForSelectedSources: vi.fn(async () => {}),
   client: {
-    decideDocumentEdit: vi.fn(async (_id: string, decision: string) => ({
-      status:
-        decision === 'status'
-          ? 'proposed'
-          : decision === 'cancel'
-            ? 'cancelled'
-            : 'applied',
-      docId: 'doc',
-    })),
+    decideDocumentEdit: vi.fn(
+      async (_id: string, decision: string, _kind?: 'task') => ({
+        status:
+          decision === 'status'
+            ? 'proposed'
+            : decision === 'cancel'
+              ? 'cancelled'
+              : 'applied',
+        docId: 'doc',
+      })
+    ),
   },
 }));
 vi.mock('../../runtime/request', () => ({
@@ -26,19 +28,19 @@ vi.unstubAllGlobals();
 if (!customElements.get('test-doc-write-tool'))
   customElements.define('test-doc-write-tool', DocWriteTool);
 
-async function mount() {
+async function mount(kind: 'document' | 'task' = 'document') {
   const element = document.createElement('test-doc-write-tool') as DocWriteTool;
   element.data = {
     type: 'tool-result',
     toolCallId: 'call',
-    toolName: 'doc_update',
-    args: { doc_id: 'doc' },
+    toolName: kind === 'task' ? 'task_update' : 'doc_update',
+    args: kind === 'task' ? {} : { doc_id: 'doc' },
     result: {
       status: 'proposed',
       proposalId: 'proposal',
       operation: 'update',
-      docId: 'doc',
-      title: 'Roadmap',
+      ...(kind === 'task' ? {} : { docId: 'doc' }),
+      title: kind === 'task' ? 'Release task' : 'Roadmap',
       before: 'Old paragraph',
       after: '<script>unsafe()</script> New paragraph',
     },
@@ -109,4 +111,65 @@ test('conflicts and network errors leave the preview unsaved and prevent blind r
       button => button.textContent?.trim() === 'Apply'
     )?.disabled
   ).toBe(true);
+});
+
+test('task previews route status and Apply to task decisions without flushing a document', async () => {
+  const element = await mount('task');
+  expect(service.client.decideDocumentEdit).toHaveBeenCalledWith(
+    'proposal',
+    'status',
+    'task'
+  );
+  expect(service.client.decideDocumentEdit).toHaveBeenCalledTimes(1);
+  expect(element.textContent).toContain('Task change');
+  const apply = [...element.querySelectorAll('button')].find(
+    button => button.textContent?.trim() === 'Apply'
+  );
+  apply?.click();
+  await vi.waitFor(() => expect(element.decision).toBe('applied'));
+  await element.updateComplete;
+  expect(service.client.decideDocumentEdit).toHaveBeenCalledWith(
+    'proposal',
+    'apply',
+    'task'
+  );
+  expect(service.waitForSelectedSources).not.toHaveBeenCalled();
+  expect(element.textContent).toContain('Saved to task.');
+  expect(apply?.disabled).toBe(true);
+});
+
+test('task Cancel never applies and an ownership conflict disables further Apply', async () => {
+  const cancelled = await mount('task');
+  [...cancelled.querySelectorAll('button')]
+    .find(button => button.textContent?.trim() === 'Cancel')
+    ?.click();
+  await vi.waitFor(() => expect(cancelled.decision).toBe('cancelled'));
+  expect(service.client.decideDocumentEdit).toHaveBeenCalledWith(
+    'proposal',
+    'cancel',
+    'task'
+  );
+  expect(
+    service.client.decideDocumentEdit.mock.calls.filter(
+      call => call[1] === 'apply'
+    )
+  ).toHaveLength(0);
+  const changed = await mount('task');
+  service.client.decideDocumentEdit.mockRejectedValueOnce(
+    new Error('Task ownership changed. Request a new preview.')
+  );
+  [...changed.querySelectorAll('button')]
+    .find(button => button.textContent?.trim() === 'Apply')
+    ?.click();
+  await vi.waitFor(() => expect(changed.decision).toBe('uncertain'));
+  await changed.updateComplete;
+  expect(changed.querySelector('[role=alert]')?.textContent).toContain(
+    'ownership changed'
+  );
+  expect(
+    [...changed.querySelectorAll('button')].find(
+      button => button.textContent?.trim() === 'Apply'
+    )?.disabled
+  ).toBe(true);
+  expect(service.waitForSelectedSources).not.toHaveBeenCalled();
 });

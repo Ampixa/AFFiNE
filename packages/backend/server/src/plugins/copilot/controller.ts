@@ -47,6 +47,7 @@ import {
   ActionStreamHost,
   projectActionEventToChatEvent,
 } from './runtime/hosts/action-stream-host';
+import { TaskEditing } from './runtime/task-editing';
 import { TurnOrchestrator } from './runtime/turn-orchestrator';
 import { CopilotStorage } from './storage';
 import { getSignal } from './utils';
@@ -70,8 +71,26 @@ export class CopilotController implements BeforeApplicationShutdown {
     private readonly orchestrator: TurnOrchestrator,
     private readonly actionStreams: ActionStreamHost,
     private readonly storage: CopilotStorage,
-    private readonly documentEditing: DocumentEditing
+    private readonly documentEditing: DocumentEditing,
+    private readonly taskEditing: TaskEditing
   ) {}
+
+  @Post('/task-edits/:proposalId')
+  async decideTaskEdit(
+    @CurrentUser() user: CurrentUser,
+    @Param('proposalId') proposalId: string,
+    @Headers('x-affine-document-edit') header: string,
+    @Body() body: unknown
+  ) {
+    if (header !== '1') throw createHttpError(400, 'Missing task edit header.');
+    const parsed = z
+      .object({ decision: z.enum(['apply', 'cancel', 'status']) })
+      .strict()
+      .safeParse(body);
+    if (!parsed.success || !z.string().uuid().safeParse(proposalId).success)
+      throw createHttpError(400, 'Invalid task edit request.');
+    return this.taskEditing.decide(user.id, proposalId, parsed.data.decision);
+  }
 
   @Post('/document-edits/:proposalId')
   async decideDocumentEdit(

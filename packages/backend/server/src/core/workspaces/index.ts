@@ -58,7 +58,7 @@ import { WorkspaceTasksController, WorkspaceTasksService } from './tasks';
     AdminWorkspaceResolver,
     WorkspaceStatsJob,
   ],
-  exports: [WorkspaceService],
+  exports: [WorkspaceService, WorkspaceTasksService],
 })
 export class WorkspaceModule {}
 

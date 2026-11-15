@@ -424,7 +424,8 @@ function providerFixture(
             throw new Error('SECRET_BACKEND_DETAILS');
           },
         } as unknown as KanbanService)
-      : f.service
+      : f.service,
+    {} as never
   );
   return { ...f, provider, permissionCalls };
 }

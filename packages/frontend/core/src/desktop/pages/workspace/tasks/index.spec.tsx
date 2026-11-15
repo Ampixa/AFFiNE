@@ -137,6 +137,9 @@ const ticket = (patch: Partial<Task> = {}): Task => ({
   ],
   updatedAt: 100,
   canEdit: true,
+  canAdmin: true,
+  canComment: true,
+  comments: [],
   ...patch,
 });
 const dialog = () => within(screen.getByRole('dialog'));
@@ -164,6 +167,8 @@ beforeEach(() => {
     currentUserId: 'user-yash',
     refresh: vi.fn().mockResolvedValue(undefined),
     createTask: vi.fn().mockResolvedValue('created-1'),
+    comment: vi.fn().mockResolvedValue(undefined),
+    loadMoreComments: vi.fn().mockResolvedValue(undefined),
     updateTask: vi.fn().mockResolvedValue(ticket({ updatedAt: 101 })),
     linkDocument: vi.fn().mockResolvedValue(undefined),
     removeLegacyLinks: vi
@@ -389,11 +394,11 @@ describe('native workspace Tasks member and access interactions', () => {
     fireEvent.change(dialog().getByLabelText('Context document'), {
       target: { value: 'source-1' },
     });
-    vi.mocked(window.confirm).mockReturnValue(false);
     fireEvent.click(dialog().getByRole('button', { name: 'Close' }));
-    expect(window.confirm).toHaveBeenCalledWith(
-      'Discard your unsaved task changes?'
-    );
+    expect(
+      screen.getByRole('alertdialog', { name: 'Discard unsaved changes?' })
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
     expect(dialog().getByLabelText('Context document')).toBeTruthy();
   });
   test('conflict rejection preserves edited title and does not navigate or retry automatically', async () => {
@@ -513,5 +518,214 @@ describe('native workspace Tasks member and access interactions', () => {
       )
     );
     expect(state.openDoc).not.toHaveBeenCalled();
+  });
+});
+
+describe('task conversation and owner-only controls', () => {
+  const ownComment = {
+    id: 'c1',
+    actorId: 'user-yash',
+    body: 'See https://example.org/research',
+    createdAt: 100,
+    updatedAt: 100,
+    edited: false,
+    canEdit: true,
+  };
+  test('owner can edit progress and checklist but cannot change administration', async () => {
+    state.value.canCreate = false;
+    state.value.tasks = [
+      ticket({
+        canAdmin: false,
+        description: '- [ ] Read context\n- [x] Record decision',
+      }),
+    ];
+    render(<Component />);
+    openTask();
+    expect(
+      (dialog().getByLabelText('Title') as HTMLInputElement).disabled
+    ).toBe(true);
+    expect(
+      (dialog().getByLabelText('Priority') as HTMLSelectElement).disabled
+    ).toBe(true);
+    expect(
+      (dialog().getByLabelText('Target date · optional') as HTMLInputElement)
+        .disabled
+    ).toBe(true);
+    expect(dialog().queryByRole('button', { name: 'Archive' })).toBeNull();
+    expect(dialog().queryByLabelText('Context document')).toBeNull();
+    expect(dialog().queryByTestId('member-selector')).toBeNull();
+    fireEvent.click(dialog().getByRole('checkbox', { name: 'Read context' }));
+    fireEvent.change(dialog().getByLabelText('Status'), {
+      target: { value: 'doing' },
+    });
+    fireEvent.click(dialog().getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(state.value.updateTask).toHaveBeenCalledWith(
+        'task-1',
+        {
+          status: 'doing',
+          description: '- [x] Read context\n- [x] Record decision',
+        },
+        100
+      )
+    );
+  });
+  test('other member can comment without editing another owner’s task', async () => {
+    state.value.tasks = [
+      ticket({ canAdmin: false, canEdit: false, assigneeId: 'user-voidash' }),
+    ];
+    render(<Component />);
+    openTask();
+    expect(
+      (dialog().getByLabelText('Description') as HTMLTextAreaElement).disabled
+    ).toBe(true);
+    fireEvent.change(dialog().getByLabelText('Add a comment'), {
+      target: { value: 'Here is the context https://example.org' },
+    });
+    fireEvent.click(dialog().getByRole('button', { name: 'Post comment' }));
+    await waitFor(() =>
+      expect(state.value.comment).toHaveBeenCalledWith(
+        'task-1',
+        'Here is the context https://example.org',
+        undefined
+      )
+    );
+    expect(state.value.updateTask).not.toHaveBeenCalled();
+  });
+  test('comment links are plain http(s) links and markup remains text', () => {
+    state.value.tasks = [
+      ticket({
+        comments: [
+          ownComment,
+          {
+            ...ownComment,
+            id: 'c2',
+            actorId: 'user-voidash',
+            canEdit: false,
+            edited: true,
+            body: '<img src=x onerror=alert(1)> javascript:alert(1)',
+          },
+        ],
+      }),
+    ];
+    render(<Component />);
+    openTask();
+    const link = dialog().getByRole('link', {
+      name: 'https://example.org/research',
+    });
+    expect(link.getAttribute('rel')).toContain('noopener');
+    expect(link.getAttribute('referrerpolicy')).toBe('no-referrer');
+    expect(dialog().queryByRole('img')).toBeNull();
+    expect(
+      dialog().getByText('<img src=x onerror=alert(1)> javascript:alert(1)')
+    ).toBeTruthy();
+    expect(
+      dialog().getAllByRole('button', { name: 'Edit comment' })
+    ).toHaveLength(1);
+    expect(dialog().getByText(/· edited/)).toBeTruthy();
+  });
+  test('comment editor retains its initial revision when another edit arrives', async () => {
+    state.value.tasks = [ticket({ comments: [ownComment] })];
+    const ui = render(<Component />);
+    openTask();
+    fireEvent.click(dialog().getByRole('button', { name: 'Edit comment' }));
+    fireEvent.change(dialog().getByLabelText('Edit your comment'), {
+      target: { value: 'My edit' },
+    });
+    state.value = {
+      ...state.value,
+      tasks: [
+        ticket({
+          comments: [
+            { ...ownComment, body: 'Concurrent change', updatedAt: 200 },
+          ],
+        }),
+      ],
+    };
+    ui.rerender(<Component />);
+    fireEvent.click(dialog().getByRole('button', { name: 'Save comment' }));
+    await waitFor(() =>
+      expect(state.value.comment).toHaveBeenCalledWith(
+        'task-1',
+        'My edit',
+        ownComment
+      )
+    );
+  });
+  test('uncertain comment submission cannot be blindly replayed', async () => {
+    state.value.comment.mockRejectedValueOnce(new Error('Connection lost'));
+    render(<Component />);
+    openTask();
+    fireEvent.change(dialog().getByLabelText('Add a comment'), {
+      target: { value: 'Keep my draft' },
+    });
+    fireEvent.click(dialog().getByRole('button', { name: 'Post comment' }));
+    await waitFor(() =>
+      expect(dialog().getByRole('alert').textContent).toContain(
+        'Reopen the task'
+      )
+    );
+    expect(
+      (dialog().getByLabelText('Add a comment') as HTMLTextAreaElement).value
+    ).toBe('Keep my draft');
+    expect(
+      dialog()
+        .getByRole('button', { name: 'Post comment' })
+        .hasAttribute('disabled')
+    ).toBe(true);
+    expect(state.value.comment).toHaveBeenCalledTimes(1);
+  });
+  test('membership revocation removes conversation and its composer', () => {
+    state.value.tasks = [ticket({ comments: [ownComment] })];
+    const ui = render(<Component />);
+    openTask();
+    state.value = { ...state.value, tasks: [] };
+    ui.rerender(<Component />);
+    expect(dialog().queryByText('Conversation')).toBeNull();
+    expect(dialog().queryByRole('link')).toBeNull();
+    expect(dialog().queryByLabelText('Add a comment')).toBeNull();
+  });
+  test('ownership change disables a dirty progress draft without dropping typed comment', () => {
+    state.value.tasks = [ticket({ canAdmin: false })];
+    const ui = render(<Component />);
+    openTask();
+    fireEvent.change(dialog().getByLabelText('Description'), {
+      target: { value: 'Unsaved owner update' },
+    });
+    fireEvent.change(dialog().getByLabelText('Add a comment'), {
+      target: { value: 'A question' },
+    });
+    state.value = {
+      ...state.value,
+      tasks: [
+        ticket({
+          assigneeId: 'user-voidash',
+          canAdmin: false,
+          canEdit: false,
+          updatedAt: 200,
+        }),
+      ],
+    };
+    ui.rerender(<Component />);
+    expect(
+      (dialog().getByLabelText('Description') as HTMLTextAreaElement).disabled
+    ).toBe(true);
+    expect(dialog().queryByRole('button', { name: 'Save changes' })).toBeNull();
+    expect(
+      (dialog().getByLabelText('Add a comment') as HTMLTextAreaElement).value
+    ).toBe('A question');
+  });
+  test('more conversation pages use the server cursor', async () => {
+    state.value.tasks = [
+      ticket({ comments: [ownComment], commentsNextCursor: 50 }),
+    ];
+    render(<Component />);
+    openTask();
+    fireEvent.click(
+      dialog().getByRole('button', { name: 'Load earlier comments' })
+    );
+    await waitFor(() =>
+      expect(state.value.loadMoreComments).toHaveBeenCalledWith('task-1', 50)
+    );
   });
 });

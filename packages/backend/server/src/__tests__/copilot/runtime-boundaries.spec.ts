@@ -1256,7 +1256,8 @@ test('controller projects successful streams and preparation failures to SSE eve
     orchestrator,
     actions,
     {} as CopilotStorage,
-    {} as import('../../plugins/copilot/runtime/document-editing').DocumentEditing
+    {} as import('../../plugins/copilot/runtime/document-editing').DocumentEditing,
+    {} as never
   );
 
   t.deepEqual(
