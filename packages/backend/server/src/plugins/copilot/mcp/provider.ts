@@ -671,7 +671,7 @@ export class WorkspaceMcpProvider {
       if (accessMode === McpAccessMode.READ_WRITE) {
         add(
           'create_task',
-          'Create a task. Workspace admin required. Do not retry an ambiguous create; inspect list first.',
+          'Create a task. Members create self-assigned tasks with default priority and no deadline; admins may assign others. Do not retry an ambiguous create; inspect list first.',
           createSchema,
           args => service.create(userId, workspaceId, args)
         );
@@ -684,7 +684,7 @@ export class WorkspaceMcpProvider {
         );
         add(
           'link_task_document',
-          'Link or unlink a context document; admin and document edit access required. Linking never grants access.',
+          'Link or unlink an accessible context document on your assigned task; admins may manage others. Document read access required. Linking never grants access.',
           z
             .object({
               taskId: id,

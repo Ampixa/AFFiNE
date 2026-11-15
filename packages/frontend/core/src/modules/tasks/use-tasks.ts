@@ -18,6 +18,7 @@ type ContextDoc = { id: string; title: string; canEdit: boolean };
 type TaskPage = {
   tasks: Task[];
   canCreate: boolean;
+  canAdmin: boolean;
   linkedDocs: ContextDoc[];
   nextCursor: string | null;
 };
@@ -53,6 +54,7 @@ export function useTasks(options: { docId?: string } = {}) {
   const [loading, setLoading] = useState(available);
   const [error, setError] = useState<string | null>(null);
   const [canCreate, setCanCreate] = useState(false);
+  const [canAdmin, setCanAdmin] = useState(false);
   const mounted = useRef(false);
   const generation = useRef(0);
   const pending = useRef<Promise<void> | null>(null);
@@ -201,6 +203,7 @@ export function useTasks(options: { docId?: string } = {}) {
       tasks: [],
       linkedDocs: [],
       canCreate: false,
+      canAdmin: false,
       nextCursor: null,
     };
     const cursors = new Set<string>();
@@ -213,6 +216,7 @@ export function useTasks(options: { docId?: string } = {}) {
       all.tasks.push(...result.tasks);
       all.linkedDocs.push(...result.linkedDocs);
       all.canCreate = result.canCreate;
+      all.canAdmin = result.canAdmin;
       if (!result.nextCursor) return all;
       if (cursors.has(result.nextCursor))
         throw new Error(
@@ -287,6 +291,7 @@ export function useTasks(options: { docId?: string } = {}) {
           ...new Map(result.linkedDocs.map(doc => [doc.id, doc])).values(),
         ]);
         setCanCreate(result.canCreate);
+        setCanAdmin(Boolean(result.canAdmin));
         setError(null);
       } catch (cause) {
         if (active()) {
@@ -294,6 +299,7 @@ export function useTasks(options: { docId?: string } = {}) {
           setLinkedDocs([]);
           setContextDocs([]);
           setCanCreate(false);
+          setCanAdmin(false);
           setError(
             cause instanceof Error
               ? cause.message
@@ -329,6 +335,7 @@ export function useTasks(options: { docId?: string } = {}) {
       contextCursorRef.current = null;
       setContextLoading(false);
       setCanCreate(false);
+      setCanAdmin(false);
     };
     invalidate.current = retry => {
       clear();
@@ -673,6 +680,7 @@ export function useTasks(options: { docId?: string } = {}) {
     loading,
     error,
     canCreate,
+    canAdmin,
     isLocal,
     available,
     currentUserId: account?.id ?? null,

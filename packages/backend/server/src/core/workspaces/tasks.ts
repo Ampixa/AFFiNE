@@ -123,11 +123,35 @@ export class WorkspaceTasksService {
       .can('Workspace.Users.Manage');
   }
 
-  private async assertAdmin(userId: string, workspaceId: string) {
-    if (!(await this.isAdmin(userId, workspaceId)))
+  private assertMemberCreate(
+    userId: string,
+    value: {
+      assigneeId?: string | null;
+      priority?: string;
+      dueDate?: string | null;
+    }
+  ) {
+    if (
+      (value.assigneeId !== undefined && value.assigneeId !== userId) ||
+      (value.priority !== undefined && value.priority !== 'normal') ||
+      (value.dueDate !== undefined && value.dueDate !== null)
+    )
       throw new ActionForbidden(
-        'Task administration requires a workspace admin.'
+        'Members may create only self-assigned tasks with default priority and no deadline.'
       );
+  }
+
+  private async assertLinkOwner(
+    userId: string,
+    workspaceId: string,
+    assigneeId: string | null
+  ) {
+    const admin = await this.isAdmin(userId, workspaceId);
+    if (!admin && assigneeId !== userId)
+      throw new ActionForbidden(
+        'Only the assigned member or a workspace admin may change task context links.'
+      );
+    return admin;
   }
 
   private async lockActor(
@@ -269,8 +293,19 @@ export class WorkspaceTasksService {
       : [];
     const admin =
       adminCapability ?? (await this.isAdmin(userId, row.workspaceId));
+    const editable =
+      canWrite &&
+      (admin || row.assigneeId === userId) &&
+      (!row.legacyDocId ||
+        (await this.docAllowed(
+          userId,
+          row.workspaceId,
+          row.legacyDocId,
+          true
+        )));
     return {
       canAdmin: admin,
+      canLink: editable,
       canComment: true,
       comments: detail
         ? await this.comments(userId, row.workspaceId, row.id)
@@ -288,16 +323,7 @@ export class WorkspaceTasksService {
       version: row.version,
       detailDocId: row.legacyDocId,
       linkedDocIds,
-      canEdit:
-        canWrite &&
-        (admin || row.assigneeId === userId) &&
-        (!row.legacyDocId ||
-          (await this.docAllowed(
-            userId,
-            row.workspaceId,
-            row.legacyDocId,
-            true
-          ))),
+      canEdit: editable,
       history: history.map(e => ({
         id: e.id,
         actorId: e.actorId,
@@ -356,7 +382,7 @@ export class WorkspaceTasksService {
       readable.flatMap(t => t.links.map(l => l.docId))
     );
     const allowed = new Set(linkedDocs.map(d => d.id));
-    const canCreate = await this.ac
+    const canAdmin = await this.ac
       .user(userId)
       .workspace(workspaceId)
       .can('Workspace.Users.Manage');
@@ -373,13 +399,14 @@ export class WorkspaceTasksService {
           row.links.map(l => l.docId).filter(id => allowed.has(id)),
           canWrite,
           false,
-          canCreate
+          canAdmin
         )
       );
     return {
       tasks,
       linkedDocs,
-      canCreate,
+      canCreate: canWrite,
+      canAdmin,
       nextCursor:
         rows.length === paging.take ? String(paging.skip + rows.length) : null,
     };
@@ -468,7 +495,7 @@ export class WorkspaceTasksService {
     activeIds?: ReadonlySet<string>
   ) {
     if (!(activeIds ?? (await this.activeDocumentIds(workspaceId))).has(docId))
-      throw new NotFound('Editable document unavailable.');
+      throw new NotFound('Document unavailable.');
     const doc = await this.db.workspaceDoc.findUnique({
       where: { workspaceId_docId: { workspaceId, docId } },
       select: { blocked: true },
@@ -476,21 +503,24 @@ export class WorkspaceTasksService {
     if (
       !doc ||
       doc.blocked ||
-      !(await this.docAllowed(userId, workspaceId, docId, true))
+      !(await this.docAllowed(userId, workspaceId, docId))
     )
-      throw new NotFound('Editable document unavailable.');
+      throw new NotFound('Document unavailable.');
   }
 
   async create(userId: string, workspaceId: string, input: unknown) {
     await this.access(userId, workspaceId, true);
-    await this.assertAdmin(userId, workspaceId);
-    const { linkedDocIds, ...value } = parse(createSchema, input);
+    const admin = await this.isAdmin(userId, workspaceId);
+    const parsed = parse(createSchema, input);
+    if (!admin) this.assertMemberCreate(userId, parsed);
+    const { linkedDocIds, ...value } = parsed;
     const data = {
       description: '',
       status: 'inbox',
       priority: 'normal',
       blockedReason: '',
       ...value,
+      ...(!admin ? { assigneeId: userId } : {}),
     };
     this.validateState(data);
     await this.assignee(workspaceId, data.assigneeId);
@@ -502,7 +532,12 @@ export class WorkspaceTasksService {
       await this.assertLink(userId, workspaceId, id, activeIds);
     const row = await this.db.$transaction(async tx => {
       await this.lockActor(tx, userId, workspaceId);
-      await this.assertAdmin(userId, workspaceId);
+      await this.access(userId, workspaceId, true);
+      if (!(await this.isAdmin(userId, workspaceId)))
+        this.assertMemberCreate(userId, {
+          ...data,
+          assigneeId: data.assigneeId ?? null,
+        });
       await this.assignee(workspaceId, data.assigneeId);
       for (const id of ids) await this.assertLink(userId, workspaceId, id);
       return tx.workspaceTask.create({
@@ -675,20 +710,29 @@ export class WorkspaceTasksService {
     remove = false
   ) {
     const row = await this.task(userId, workspaceId, id, true);
-    await this.assertAdmin(userId, workspaceId);
+    await this.assertLinkOwner(userId, workspaceId, row.assigneeId);
     parse(identifier, docId);
     await this.assertLink(userId, workspaceId, docId);
     await this.db.$transaction(async tx => {
       await this.lockActor(tx, userId, workspaceId);
-      await this.assertAdmin(userId, workspaceId);
-      await this.task(userId, workspaceId, id, true);
+      const current = await this.task(userId, workspaceId, id, true);
+      const admin = await this.assertLinkOwner(
+        userId,
+        workspaceId,
+        current.assigneeId
+      );
       await this.assertLink(userId, workspaceId, docId);
       const existing = await tx.taskDocumentLink.findUnique({
         where: { taskId_docId: { taskId: id, docId } },
       });
       if (remove ? !existing : existing) return;
       const changed = await tx.workspaceTask.updateMany({
-        where: { id, workspaceId, version: row.version },
+        where: {
+          id,
+          workspaceId,
+          version: row.version,
+          ...(!admin ? { assigneeId: userId } : {}),
+        },
         data: {
           version: { increment: 1 },
           updatedBy: userId,
