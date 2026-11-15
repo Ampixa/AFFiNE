@@ -114,12 +114,13 @@ export class CopilotClient {
 
   async decideDocumentEdit(
     proposalId: string,
-    decision: 'apply' | 'cancel' | 'status'
+    decision: 'apply' | 'cancel' | 'status',
+    kind: 'document' | 'task' = 'document'
   ) {
     if (!this.fetch)
       throw new Error('Document editing is unavailable in this client.');
     const response = await this.fetch(
-      `/api/copilot/document-edits/${encodeURIComponent(proposalId)}`,
+      `/api/copilot/${kind}-edits/${encodeURIComponent(proposalId)}`,
       {
         method: 'POST',
         headers: {

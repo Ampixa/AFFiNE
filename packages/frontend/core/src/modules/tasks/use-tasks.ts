@@ -9,6 +9,7 @@ import { WorkspaceService } from '../workspace';
 import {
   type CreateTaskInput,
   type Task,
+  type TaskComment,
   type TaskPatch,
   validateTaskPatch,
 } from './model';
@@ -275,6 +276,8 @@ export function useTasks(options: { docId?: string } = {}) {
             const old = previous.find(value => value.id === task.id);
             return {
               ...task,
+              comments: old?.comments ?? task.comments,
+              commentsNextCursor: old?.commentsNextCursor,
               history:
                 old?.updatedAt === task.updatedAt ? old.history : task.history,
             };
@@ -513,7 +516,25 @@ export function useTasks(options: { docId?: string } = {}) {
             ids.forEach(docId => linkedWatchIds.current.add(docId));
             assertWatched(ids);
             setTasks(previous =>
-              previous.map(value => (value.id === id ? task : value))
+              previous.map(value =>
+                value.id === id
+                  ? {
+                      ...task,
+                      comments: [
+                        ...new Map(
+                          [
+                            ...(value.comments ?? []),
+                            ...(task.comments ?? []),
+                          ].map(comment => [comment.id, comment])
+                        ).values(),
+                      ],
+                      commentsNextCursor:
+                        task.comments?.length === 50
+                          ? Math.max(50, value.commentsNextCursor ?? 0)
+                          : null,
+                    }
+                  : value
+              )
             );
             return task;
           }
@@ -593,8 +614,62 @@ export function useTasks(options: { docId?: string } = {}) {
     },
     [request, refresh]
   );
+  const loadMoreComments = useCallback(
+    async (id: string, cursor: number) => {
+      const version = generation.current;
+      const comments = await request<TaskComment[]>(
+        '/' + encodeURIComponent(id) + '/comments?cursor=' + cursor
+      );
+      if (!mounted.current || version !== generation.current)
+        throw new Error(
+          'Task access changed. Reopen the task before continuing.'
+        );
+      setTasks(previous =>
+        previous.map(task =>
+          task.id === id
+            ? {
+                ...task,
+                comments: [
+                  ...new Map(
+                    [...(task.comments ?? []), ...comments].map(comment => [
+                      comment.id,
+                      comment,
+                    ])
+                  ).values(),
+                ],
+                commentsNextCursor:
+                  comments.length === 50 ? cursor + comments.length : null,
+              }
+            : task
+        )
+      );
+    },
+    [request]
+  );
+  const comment = useCallback(
+    async (id: string, body: string, existing?: TaskComment) => {
+      await request(
+        '/' +
+          encodeURIComponent(id) +
+          '/comments' +
+          (existing ? '/' + encodeURIComponent(existing.id) : ''),
+        existing ? 'PATCH' : 'POST',
+        { body, ...(existing ? { expectedUpdatedAt: existing.updatedAt } : {}) }
+      );
+      try {
+        await loadTask(id);
+      } catch {
+        throw new Error(
+          'Comment saved but refresh failed. Reopen the task; do not submit again.'
+        );
+      }
+    },
+    [request, loadTask]
+  );
   return {
     tasks,
+    comment,
+    loadMoreComments,
     loading,
     error,
     canCreate,

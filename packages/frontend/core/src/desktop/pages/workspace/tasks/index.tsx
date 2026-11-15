@@ -1,7 +1,8 @@
-import { Button, Modal } from '@affine/component';
+import { Button, ConfirmModal, Modal } from '@affine/component';
 import { MemberSelectorInline } from '@affine/core/components/member-selector';
 import type {
   Task,
+  TaskComment,
   TaskPatch,
   TaskPriority,
   TaskStatus,
@@ -92,6 +93,7 @@ export const Component = () => {
   const [priorityFilter, setPriorityFilter] = useState('');
   const [ownerFilter, setOwnerFilter] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
+  const [discardOpen, setDiscardOpen] = useState(false);
   const [selected, setSelected] = useState<Task | null>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [sourceId, setSourceId] = useState('');
@@ -163,11 +165,66 @@ export const Component = () => {
         'Could not refresh task details. Close and reopen to verify access.'
       )
     );
+    const timer = setInterval(() => {
+      if (document.visibilityState !== 'hidden')
+        void loadTask(selectedId).catch(() => {});
+    }, 30000);
+    return () => clearInterval(timer);
   }, [open, selectedId, loadTask]);
   const current = selected
     ? workspace.tasks.find(t => t.id === selected.id)
     : null;
   const editable = selected ? Boolean(current?.canEdit) : workspace.canCreate;
+  const administrative = selected
+    ? editable && Boolean(current?.canAdmin)
+    : workspace.canCreate;
+  const [commentBody, setCommentBody] = useState('');
+  const [editingComment, setEditingComment] = useState<TaskComment | null>(
+    null
+  );
+  const [commentUncertain, setCommentUncertain] = useState(false);
+  const [commentLoading, setCommentLoading] = useState(false);
+  const loadEarlierComments = async () => {
+    if (!current) return;
+
+    if (current.commentsNextCursor == null) return;
+    setCommentLoading(true);
+    try {
+      await workspace.loadMoreComments(current.id, current.commentsNextCursor);
+    } catch (error) {
+      setFormError(
+        error instanceof Error ? error.message : 'Could not load more comments.'
+      );
+    } finally {
+      setCommentLoading(false);
+    }
+  };
+  const saveComment = async () => {
+    if (!current?.canComment || busy || commentUncertain || !commentBody.trim())
+      return;
+
+    setBusy(true);
+    setFormError('');
+    try {
+      await workspace.comment(
+        current.id,
+        commentBody,
+        editingComment ?? undefined
+      );
+      setCommentBody('');
+      setEditingComment(null);
+    } catch (error) {
+      setCommentUncertain(true);
+      setFormError(
+        (error instanceof Error
+          ? error.message
+          : 'Could not verify the comment outcome.') +
+          ' Reopen the task and check the conversation before submitting again.'
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
   const dirty = JSON.stringify(draft) !== initialDraft || Boolean(sourceId);
   useEffect(() => {
     if (!open || !current || !selected || dirty) return;
@@ -190,6 +247,9 @@ export const Component = () => {
     setInitialDraft(JSON.stringify(d));
     setSourceId('');
     setFormError('');
+    setCommentBody('');
+    setEditingComment(null);
+    setCommentUncertain(false);
     setDocumentSearch('');
     setOpen(true);
   };
@@ -209,12 +269,18 @@ export const Component = () => {
     setInitialDraft(JSON.stringify(next));
     setSourceId('');
     setFormError('');
+    setCommentBody('');
+    setEditingComment(null);
+    setCommentUncertain(false);
     setDocumentSearch('');
     setOpen(true);
   }, [requestedTaskId, workspace.loading, workspace.tasks]);
   const close = () => {
     if (busy) return;
-    if (dirty && !window.confirm('Discard your unsaved task changes?')) return;
+    if (dirty || commentBody.trim()) {
+      setDiscardOpen(true);
+      return;
+    }
     setOpen(false);
   };
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
@@ -608,7 +674,7 @@ export const Component = () => {
                   value={draft.title}
                   maxLength={200}
                   required
-                  disabled={!editable || busy}
+                  disabled={!administrative || busy}
                   onChange={e => set('title', e.target.value)}
                   placeholder="What needs to happen?"
                 />
@@ -639,7 +705,7 @@ export const Component = () => {
                     <MemberSelectorInline
                       selected={draft.assigneeId ? [draft.assigneeId] : []}
                       onChange={ids => set('assigneeId', ids.at(-1) || null)}
-                      readonly={!editable || busy}
+                      readonly={!administrative || busy}
                       placeholder="Unassigned"
                     />
                   )}
@@ -649,7 +715,7 @@ export const Component = () => {
                   <select
                     className={styles.control}
                     value={draft.priority}
-                    disabled={!editable || busy}
+                    disabled={!administrative || busy}
                     onChange={e =>
                       set('priority', e.target.value as TaskPriority)
                     }
@@ -665,7 +731,7 @@ export const Component = () => {
                     className={styles.control}
                     type="date"
                     value={draft.dueDate || ''}
-                    disabled={!editable || busy}
+                    disabled={!administrative || busy}
                     onChange={e => set('dueDate', e.target.value || null)}
                   />
                 </label>
@@ -692,11 +758,40 @@ export const Component = () => {
                   disabled={!editable || busy}
                   maxLength={20000}
                   rows={5}
-                  placeholder="Describe the work, acceptance criteria, or next steps…"
+                  placeholder="Describe the work or next steps. Add - [ ] before a line for a checklist item."
                   onChange={e => set('description', e.target.value)}
                 />
               </label>
-              {editable && (
+              {(draft.description ?? '')
+                .split('\n')
+                .some(line => /^\s*- \[[ xX]\] /.test(line)) && (
+                <fieldset className={styles.field} disabled={!editable || busy}>
+                  <legend>Checklist</legend>
+                  {(draft.description ?? '').split('\n').map((line, index) => {
+                    const item = /^(\s*- \[)([ xX])(\] )(.*)$/.exec(line);
+                    if (!item) return null;
+                    return (
+                      <label key={index}>
+                        <input
+                          type="checkbox"
+                          checked={item[2].toLowerCase() === 'x'}
+                          onChange={event => {
+                            const lines = (draft.description ?? '').split('\n');
+                            lines[index] =
+                              item[1] +
+                              (event.target.checked ? 'x' : ' ') +
+                              item[3] +
+                              item[4];
+                            set('description', lines.join('\n'));
+                          }}
+                        />{' '}
+                        {item[4]}
+                      </label>
+                    );
+                  })}
+                </fieldset>
+              )}
+              {administrative && (
                 <div className={styles.field}>
                   Link a context document · optional
                   <span className={styles.muted}>
@@ -783,7 +878,7 @@ export const Component = () => {
                         Open original document
                       </Button>
                     )}
-                    {editable && (
+                    {administrative && (
                       <Button
                         variant="plain"
                         disabled={busy}
@@ -817,6 +912,117 @@ export const Component = () => {
                   )}
                 </section>
                 <section className={styles.section}>
+                  <h3 className={styles.sectionHeading}>Conversation</h3>
+                  <p className={styles.muted}>
+                    Comments are visible to people who can access this task.
+                    Links do not grant document access.
+                  </p>
+                  <ol className={styles.activity}>
+                    {[...(current.comments ?? [])]
+                      .sort(
+                        (a, b) =>
+                          a.createdAt - b.createdAt || a.id.localeCompare(b.id)
+                      )
+                      .map(comment => (
+                        <li key={comment.id}>
+                          <MemberSelectorInline
+                            selected={[comment.actorId]}
+                            readonly
+                            onChange={() => {}}
+                            placeholder="Workspace member"
+                          />
+                          <span className={styles.muted}>
+                            {new Date(comment.createdAt).toLocaleString()}
+                            {comment.edited ? ' · edited' : ''}
+                          </span>
+                          <p
+                            style={{
+                              whiteSpace: 'pre-wrap',
+                              overflowWrap: 'anywhere',
+                            }}
+                          >
+                            {comment.body
+                              .split(/(https?:\/\/[^\s<>]+)/g)
+                              .map((part, index) =>
+                                /^https?:\/\//.test(part) ? (
+                                  <a
+                                    key={index}
+                                    href={part}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    referrerPolicy="no-referrer"
+                                  >
+                                    {part}
+                                  </a>
+                                ) : (
+                                  part
+                                )
+                              )}
+                          </p>
+                          {comment.canEdit && (
+                            <Button
+                              variant="plain"
+                              disabled={busy || commentUncertain}
+                              onClick={() => {
+                                setCommentBody(comment.body);
+                                setEditingComment(comment);
+                                setCommentUncertain(false);
+                              }}
+                            >
+                              Edit comment
+                            </Button>
+                          )}
+                        </li>
+                      ))}
+                  </ol>
+                  {current.commentsNextCursor != null && (
+                    <Button
+                      variant="plain"
+                      disabled={commentLoading}
+                      onClick={() => void loadEarlierComments()}
+                    >
+                      {commentLoading
+                        ? 'Loading comments…'
+                        : 'Load earlier comments'}
+                    </Button>
+                  )}
+                  {current.canComment && (
+                    <>
+                      <label className={styles.field}>
+                        {editingComment ? 'Edit your comment' : 'Add a comment'}
+                        <textarea
+                          className={styles.control}
+                          value={commentBody}
+                          maxLength={10000}
+                          rows={3}
+                          disabled={busy || commentUncertain}
+                          onChange={event => setCommentBody(event.target.value)}
+                          placeholder="Share an update or paste a link…"
+                        />
+                      </label>
+                      <Button
+                        disabled={
+                          busy || commentUncertain || !commentBody.trim()
+                        }
+                        onClick={() => void saveComment()}
+                      >
+                        {editingComment ? 'Save comment' : 'Post comment'}
+                      </Button>
+                      {editingComment && (
+                        <Button
+                          variant="plain"
+                          onClick={() => {
+                            setEditingComment(null);
+                            setCommentBody('');
+                          }}
+                        >
+                          Cancel edit
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </section>
+                <section className={styles.section}>
                   <h3 className={styles.sectionHeading}>Task activity</h3>
                   <ol className={styles.activity}>
                     {current.history.map(event => (
@@ -843,6 +1049,18 @@ export const Component = () => {
           </>
         )}
       </Modal>
+      <ConfirmModal
+        open={discardOpen}
+        title="Discard unsaved changes?"
+        description="Your unsaved task or comment draft will be discarded. Saved work is kept."
+        confirmText="Discard draft"
+        cancelText="Keep editing"
+        onConfirm={() => {
+          setDiscardOpen(false);
+          setOpen(false);
+        }}
+        onCancel={() => setDiscardOpen(false)}
+      />
     </>
   );
 };

@@ -11,7 +11,7 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
-import { PrismaClient, type WorkspaceTask } from '@prisma/client';
+import { type Prisma, PrismaClient, type WorkspaceTask } from '@prisma/client';
 import type { Request } from 'express';
 import { applyUpdate, Array as YArray, Doc as YDoc, Map as YMap } from 'yjs';
 import { z } from 'zod';
@@ -49,7 +49,7 @@ const fields = z.object({
     .nullable(),
   blockedReason: z.string().max(2000),
 });
-const createSchema = fields
+export const createSchema = fields
   .omit({ archived: true })
   .partial()
   .extend({
@@ -57,7 +57,7 @@ const createSchema = fields
     linkedDocIds: z.array(identifier).max(20).default([]),
   })
   .strict();
-const patchSchema = fields
+export const patchSchema = fields
   .partial()
   .extend({
     expectedUpdatedAt: z.number().int().nonnegative(),
@@ -113,6 +113,37 @@ export class WorkspaceTasksService {
       .user(userId)
       .workspace(workspaceId)
       .assert(write ? 'Workspace.CreateDoc' : 'Workspace.Read');
+  }
+
+  async isAdmin(userId: string, workspaceId: string) {
+    await this.access(userId, workspaceId);
+    return this.ac
+      .user(userId)
+      .workspace(workspaceId)
+      .can('Workspace.Users.Manage');
+  }
+
+  private async assertAdmin(userId: string, workspaceId: string) {
+    if (!(await this.isAdmin(userId, workspaceId)))
+      throw new ActionForbidden(
+        'Task administration requires a workspace admin.'
+      );
+  }
+
+  private async lockActor(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    workspaceId: string
+  ) {
+    // Serialize a task write with membership removal/role changes. A revoked
+    // membership cannot pass an earlier read and commit after its revocation.
+    const members = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id FROM workspace_members
+      WHERE workspace_id = ${workspaceId} AND user_id = ${userId} AND state = 'active'
+      FOR SHARE`;
+    if (!members.length)
+      throw new ActionForbidden('Workspace membership required.');
+    await this.access(userId, workspaceId);
   }
 
   private docAllowed(
@@ -226,7 +257,8 @@ export class WorkspaceTasksService {
     row: WorkspaceTask,
     linkedDocIds: string[],
     canWrite: boolean,
-    detail = false
+    detail = false,
+    adminCapability?: boolean
   ) {
     const history = detail
       ? await this.db.taskActivity.findMany({
@@ -235,7 +267,14 @@ export class WorkspaceTasksService {
           take: 100,
         })
       : [];
+    const admin =
+      adminCapability ?? (await this.isAdmin(userId, row.workspaceId));
     return {
+      canAdmin: admin,
+      canComment: true,
+      comments: detail
+        ? await this.comments(userId, row.workspaceId, row.id)
+        : [],
       id: row.id,
       title: row.title,
       description: row.description,
@@ -251,6 +290,7 @@ export class WorkspaceTasksService {
       linkedDocIds,
       canEdit:
         canWrite &&
+        (admin || row.assigneeId === userId) &&
         (!row.legacyDocId ||
           (await this.docAllowed(
             userId,
@@ -265,6 +305,19 @@ export class WorkspaceTasksService {
         at: e.createdAt.getTime(),
       })),
     };
+  }
+
+  async members(userId: string, workspaceId: string) {
+    await this.access(userId, workspaceId);
+    await this.ac
+      .user(userId)
+      .workspace(workspaceId)
+      .assert('Workspace.Users.Read');
+    return this.db.workspaceMember.findMany({
+      where: { workspaceId, state: 'active' },
+      select: { userId: true, user: { select: { name: true } } },
+      take: 200,
+    });
   }
 
   async list(
@@ -306,6 +359,10 @@ export class WorkspaceTasksService {
     const canCreate = await this.ac
       .user(userId)
       .workspace(workspaceId)
+      .can('Workspace.Users.Manage');
+    const canWrite = await this.ac
+      .user(userId)
+      .workspace(workspaceId)
       .can('Workspace.CreateDoc');
     const tasks = [];
     for (const row of readable)
@@ -314,6 +371,8 @@ export class WorkspaceTasksService {
           userId,
           row,
           row.links.map(l => l.docId).filter(id => allowed.has(id)),
+          canWrite,
+          false,
           canCreate
         )
       );
@@ -424,6 +483,7 @@ export class WorkspaceTasksService {
 
   async create(userId: string, workspaceId: string, input: unknown) {
     await this.access(userId, workspaceId, true);
+    await this.assertAdmin(userId, workspaceId);
     const { linkedDocIds, ...value } = parse(createSchema, input);
     const data = {
       description: '',
@@ -440,15 +500,21 @@ export class WorkspaceTasksService {
       : undefined;
     for (const id of ids)
       await this.assertLink(userId, workspaceId, id, activeIds);
-    const row = await this.db.workspaceTask.create({
-      data: {
-        ...data,
-        workspaceId,
-        createdBy: userId,
-        updatedBy: userId,
-        links: { create: ids.map(docId => ({ docId })) },
-        activity: { create: { actorId: userId, body: 'Created task.' } },
-      },
+    const row = await this.db.$transaction(async tx => {
+      await this.lockActor(tx, userId, workspaceId);
+      await this.assertAdmin(userId, workspaceId);
+      await this.assignee(workspaceId, data.assigneeId);
+      for (const id of ids) await this.assertLink(userId, workspaceId, id);
+      return tx.workspaceTask.create({
+        data: {
+          ...data,
+          workspaceId,
+          createdBy: userId,
+          updatedBy: userId,
+          links: { create: ids.map(docId => ({ docId })) },
+          activity: { create: { actorId: userId, body: 'Created task.' } },
+        },
+      });
     });
     return this.get(userId, workspaceId, row.id);
   }
@@ -457,20 +523,47 @@ export class WorkspaceTasksService {
     userId: string,
     workspaceId: string,
     id: string,
-    input: unknown
+    input: unknown,
+    assignedOnly = false
   ) {
     const row = await this.task(userId, workspaceId, id, true);
     const { expectedUpdatedAt, ...patch } = parse(patchSchema, input);
     if (!Object.keys(patch).length)
       throw new BadRequest('No task changes provided.');
+    const admin = await this.isAdmin(userId, workspaceId);
+    if (assignedOnly && row.assigneeId !== userId)
+      throw new ActionForbidden('Task ownership changed.');
+    if (
+      !admin &&
+      (row.assigneeId !== userId ||
+        Object.keys(patch).some(
+          key => !['description', 'status', 'blockedReason'].includes(key)
+        ))
+    )
+      throw new ActionForbidden(
+        'Only the assigned owner can update task progress. Other fields require an admin.'
+      );
     this.validateState({ ...row, ...patch });
     await this.assignee(workspaceId, patch.assigneeId, row.legacyDocId);
     await this.db.$transaction(async tx => {
+      await this.lockActor(tx, userId, workspaceId);
+      await this.task(userId, workspaceId, id, true);
+      const currentAdmin = await this.isAdmin(userId, workspaceId);
+      if (
+        !currentAdmin &&
+        Object.keys(patch).some(
+          key => !['description', 'status', 'blockedReason'].includes(key)
+        )
+      )
+        throw new ActionForbidden(
+          'Task administration requires a workspace admin.'
+        );
       const changed = await tx.workspaceTask.updateMany({
         where: {
           id,
           workspaceId,
           version: row.version,
+          ...(!currentAdmin || assignedOnly ? { assigneeId: userId } : {}),
           updatedAt: new Date(expectedUpdatedAt),
         },
         data: {
@@ -495,6 +588,85 @@ export class WorkspaceTasksService {
     return this.get(userId, workspaceId, id);
   }
 
+  async comments(
+    userId: string,
+    workspaceId: string,
+    id: string,
+    cursor?: string
+  ) {
+    await this.task(userId, workspaceId, id);
+    const paging = page(cursor, '50', 50);
+    const rows = await this.db.taskComment.findMany({
+      where: { taskId: id },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      ...paging,
+    });
+    return rows.map(row => ({
+      ...row,
+      createdAt: row.createdAt.getTime(),
+      updatedAt: row.updatedAt.getTime(),
+      canEdit: row.actorId === userId,
+    }));
+  }
+
+  async comment(
+    userId: string,
+    workspaceId: string,
+    id: string,
+    input: unknown,
+    commentId?: string
+  ) {
+    await this.task(userId, workspaceId, id);
+    const value = parse(
+      z
+        .object({
+          body: z.string().trim().min(1).max(10000),
+          expectedUpdatedAt: z.number().int().optional(),
+        })
+        .strict(),
+      input
+    );
+    return this.db.$transaction(async tx => {
+      await this.lockActor(tx, userId, workspaceId);
+      await this.task(userId, workspaceId, id);
+      if (commentId) {
+        if (value.expectedUpdatedAt === undefined)
+          throw new BadRequest('Comment revision required.');
+        const result = await tx.taskComment.updateMany({
+          where: {
+            id: commentId,
+            taskId: id,
+            actorId: userId,
+            updatedAt: new Date(value.expectedUpdatedAt),
+          },
+          data: {
+            body: value.body,
+            updatedAt: new Date(
+              Math.max(Date.now(), value.expectedUpdatedAt + 1)
+            ),
+            edited: true,
+          },
+        });
+        if (result.count !== 1)
+          throw taskConflict(
+            'Comment changed or is not yours. Refresh before editing.'
+          );
+      } else {
+        await tx.taskComment.create({
+          data: { taskId: id, actorId: userId, body: value.body },
+        });
+      }
+      await tx.taskActivity.create({
+        data: {
+          taskId: id,
+          actorId: userId,
+          body: commentId ? 'Edited a comment.' : 'Added a comment.',
+        },
+      });
+      return { saved: true };
+    });
+  }
+
   async link(
     userId: string,
     workspaceId: string,
@@ -503,9 +675,14 @@ export class WorkspaceTasksService {
     remove = false
   ) {
     const row = await this.task(userId, workspaceId, id, true);
+    await this.assertAdmin(userId, workspaceId);
     parse(identifier, docId);
     await this.assertLink(userId, workspaceId, docId);
     await this.db.$transaction(async tx => {
+      await this.lockActor(tx, userId, workspaceId);
+      await this.assertAdmin(userId, workspaceId);
+      await this.task(userId, workspaceId, id, true);
+      await this.assertLink(userId, workspaceId, docId);
       const existing = await tx.taskDocumentLink.findUnique({
         where: { taskId_docId: { taskId: id, docId } },
       });
@@ -609,6 +786,40 @@ export class WorkspaceTasksController {
   ) {
     this.mutation(req);
     return this.tasks.update(user.id, ws, id, body);
+  }
+
+  @Header('Cache-Control', 'private, no-store')
+  @Get(':id/comments')
+  comments(
+    @CurrentUser() user: CurrentUser,
+    @Param('workspaceId') ws: string,
+    @Param('id') id: string,
+    @Query('cursor') cursor?: string
+  ) {
+    return this.tasks.comments(user.id, ws, id, cursor);
+  }
+  @Post(':id/comments')
+  comment(
+    @CurrentUser() user: CurrentUser,
+    @Param('workspaceId') ws: string,
+    @Param('id') id: string,
+    @Req() req: Request,
+    @Body() body: unknown
+  ) {
+    this.mutation(req);
+    return this.tasks.comment(user.id, ws, id, body);
+  }
+  @Patch(':id/comments/:commentId')
+  editComment(
+    @CurrentUser() user: CurrentUser,
+    @Param('workspaceId') ws: string,
+    @Param('id') id: string,
+    @Param('commentId') commentId: string,
+    @Req() req: Request,
+    @Body() body: unknown
+  ) {
+    this.mutation(req);
+    return this.tasks.comment(user.id, ws, id, body, commentId);
   }
   @Header('Cache-Control', 'private, no-store')
   @Post(':id/links')

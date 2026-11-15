@@ -18,6 +18,15 @@ export interface TaskEvent {
   at: number;
   body: string;
 }
+export interface TaskComment {
+  id: string;
+  actorId: string;
+  body: string;
+  createdAt: number;
+  updatedAt: number;
+  edited: boolean;
+  canEdit: boolean;
+}
 export interface Task {
   id: string;
   title: string;
@@ -33,6 +42,10 @@ export interface Task {
   history: TaskEvent[];
   updatedAt: number;
   canEdit: boolean;
+  canAdmin?: boolean;
+  canComment?: boolean;
+  comments?: TaskComment[];
+  commentsNextCursor?: number | null;
   legacyLinksDetected?: boolean;
 }
 export type TaskPatch = Partial<

@@ -371,7 +371,8 @@ test('MCP preserves local search scope and incomplete coverage', async t => {
     {} as DocReader,
     {} as DocWriter,
     retrieval,
-    {} as KanbanService
+    {} as KanbanService,
+    {} as never
   );
   const server = await provider.for('user', 'workspace');
   const tool = server.tools.find(tool => tool.name === 'doc_search');

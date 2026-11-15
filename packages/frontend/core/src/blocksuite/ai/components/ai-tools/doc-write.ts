@@ -10,7 +10,11 @@ import { getAIRequestService } from '../../runtime/request';
 import type { DocDisplayConfig } from '../ai-chat-chips';
 import type { ToolError } from './type';
 
-type DocWriteToolName = 'doc_create' | 'doc_update' | 'doc_update_meta';
+type DocWriteToolName =
+  | 'doc_create'
+  | 'doc_update'
+  | 'doc_update_meta'
+  | 'task_update';
 
 type DocWriteToolArgs = {
   doc_id?: string;
@@ -140,7 +144,10 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
       // Flush this client's human edits before the server checks the revision.
       if (action === 'apply' && proposal.docId)
         await service.waitForSelectedSources([proposal.docId]);
-      const result = await service.client.decideDocumentEdit(id, action);
+      const result =
+        this.data.toolName === 'task_update'
+          ? await service.client.decideDocumentEdit(id, action, 'task')
+          : await service.client.decideDocumentEdit(id, action);
       if (this.proposal?.proposalId !== id) return;
       this.decision = result.status;
       this.savedDocId = result.docId;
@@ -150,7 +157,7 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
       this.actionError =
         error instanceof Error
           ? error.message
-          : 'Could not verify this action. Check the document.';
+          : 'Could not verify this action. Check the item before trying again.';
     } finally {
       this.saving = false;
     }
@@ -162,21 +169,27 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
     const disabled = this.saving || this.decision !== 'proposed';
     return html`<section
       class="document-edit-preview"
-      aria-label="Document change preview"
+      aria-label=${this.data.toolName === 'task_update' ? 'Task change preview' : 'Document change preview'}
     >
       <strong
         >${
-          proposal.operation === 'create' ? 'New document' : 'Document change'
+          this.data.toolName === 'task_update'
+            ? 'Task change'
+            : proposal.operation === 'create'
+              ? 'New document'
+              : 'Document change'
         }:
         ${proposal.title}</strong
       >
       <p>
         ${
           this.decision === 'applied'
-            ? 'Saved to document.'
+            ? this.data.toolName === 'task_update'
+              ? 'Saved to task.'
+              : 'Saved to document.'
             : this.decision === 'cancelled'
               ? 'Cancelled. Nothing was changed.'
-              : 'Review before saving. Your document permissions still apply.'
+              : 'Review before saving. Your permissions are checked again when applying.'
         }
       </p>
       ${
@@ -207,7 +220,7 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
         this.decision === 'uncertain'
           ? html`<p role="status">
               This preview is unavailable or its outcome is uncertain. Check the
-              document and request a fresh preview if needed.
+              item and request a fresh preview if needed.
             </p>`
           : nothing
       }
@@ -292,8 +305,10 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
           : 'Preparing edit preview';
       case 'doc_update_meta':
         return title ? `Proposing title "${title}"` : 'Preparing title preview';
+      case 'task_update':
+        return 'Preparing task preview';
       default:
-        return 'Updating document';
+        return 'Preparing document preview';
     }
   }
 
@@ -305,6 +320,8 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
         return title ? `Updated "${title}"` : 'Document updated';
       case 'doc_update_meta':
         return title ? `Renamed "${title}"` : 'Document title updated';
+      case 'task_update':
+        return 'Task preview';
       default:
         return 'Document updated';
     }

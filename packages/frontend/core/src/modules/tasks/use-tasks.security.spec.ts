@@ -378,3 +378,79 @@ describe('database task reads and access invalidation', () => {
     expect(result.current.tasks).toEqual([]);
   });
 });
+
+describe('task conversation request boundaries', () => {
+  const comment = {
+    id: 'c1',
+    actorId: 'member-1',
+    body: 'Context',
+    createdAt: 100,
+    updatedAt: 100,
+    edited: false,
+    canEdit: true,
+  };
+  it('keeps loaded conversation when task list refreshes', async () => {
+    const f = setup();
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    f.fetch.mockImplementationOnce(async () => ({
+      status: 200,
+      json: async () => task({ comments: [comment] }),
+    }));
+    await act(async () => {
+      await result.current.loadTask('task-1');
+    });
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.tasks[0].comments).toEqual([comment]);
+  });
+  it('does not restore a late conversation page after membership revocation', async () => {
+    const f = setup();
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let resolve: ((value: any) => void) | undefined;
+    f.fetch.mockImplementationOnce(
+      () =>
+        new Promise(r => {
+          resolve = r;
+        })
+    );
+    const request = result.current.loadMoreComments('task-1', 50);
+    const rejected = expect(request).rejects.toThrow('access changed');
+    f.state.deny = true;
+    act(() => f.event('workspace.access.changed').next({ type: 'changed' }));
+    await act(async () => {
+      resolve!({ status: 200, json: async () => [comment] });
+      await rejected;
+    });
+    expect(result.current.tasks).toEqual([]);
+  });
+  it('pins comment edit version and includes CSRF without replaying ambiguous writes', async () => {
+    const f = setup();
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    f.fetch.mockImplementationOnce(async () => {
+      throw new Error('Connection lost');
+    });
+    await act(async () => {
+      await expect(
+        result.current.comment('task-1', 'Revision', comment)
+      ).rejects.toThrow('Connection lost');
+    });
+    const writes = f.fetch.mock.calls.filter(
+      ([, init]) => init?.method === 'PATCH'
+    );
+    expect(writes).toHaveLength(1);
+    expect(writes[0][0]).toBe(
+      '/api/workspaces/workspace-1/tasks/task-1/comments/c1'
+    );
+    expect(JSON.parse(writes[0][1]!.body as string)).toEqual({
+      body: 'Revision',
+      expectedUpdatedAt: 100,
+    });
+    expect(
+      (writes[0][1]!.headers as Record<string, string>)['x-affine-csrf-token']
+    ).toBe('test-csrf');
+  });
+});
