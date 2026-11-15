@@ -52,10 +52,12 @@ yarn vitest run --maxWorkers=2 \
 node deploy/ampixa/ci/verify-native.cjs packages/backend/server/dist/server-native.x64.node
 node --test deploy/ampixa/claude-files/gateway.test.mjs deploy/ampixa/enable-search.test.mjs
 node deploy/ampixa/claude-files/memory-smoke.mjs
+node --test packages/backend/server/scripts/import-legacy-tasks.test.mjs
 (
   cd packages/backend/server
   NODE_OPTIONS="--import=$root/tools/cli/register.js" yarn test \
     src/__tests__/workspace/task-snapshot.spec.ts \
+    src/__tests__/workspace/tasks.spec.ts \
     src/__tests__/copilot/local-document-search.spec.ts \
     src/__tests__/copilot/document-editing.spec.ts \
     src/__tests__/copilot/local-search-postgres.spec.ts \

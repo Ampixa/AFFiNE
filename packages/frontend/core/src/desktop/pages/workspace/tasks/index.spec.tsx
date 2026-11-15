@@ -115,11 +115,16 @@ vi.mock('@affine/core/components/member-selector', () => ({
       </div>
     ),
 }));
+vi.mock('react-router-dom', () => ({
+  useSearchParams: () => [new URLSearchParams()],
+}));
 import { Component } from './index';
 
 const ticket = (patch: Partial<Task> = {}): Task => ({
   id: 'task-1',
   title: 'Review model evidence',
+  description: '',
+  detailDocId: 'task-1',
   status: 'ready',
   assigneeId: 'user-yash',
   priority: 'normal',
@@ -145,6 +150,12 @@ beforeEach(() => {
     loading: false,
     scanProgress: { completed: 1, total: 1 },
     error: null,
+    contextDocs: [{ id: 'source-1', title: 'Research context', canEdit: true }],
+    searchDocuments: vi.fn().mockResolvedValue(undefined),
+    loadTask: vi.fn().mockResolvedValue(ticket()),
+    contextLoading: false,
+    hasMoreContext: false,
+    loadMoreDocuments: vi.fn(),
     readableDocs: [
       { id: 'source-1', title: 'Research context', canEdit: true },
     ],
@@ -178,9 +189,7 @@ describe('native workspace Tasks member and access interactions', () => {
     state.value.tasks = [];
     state.value.scanProgress = { completed: 12, total: 229 };
     render(<Component />);
-    expect(screen.getByRole('status').textContent).toContain(
-      'Checking documents: 12 of 229'
-    );
+    expect(screen.getByRole('status').textContent).toContain('Loading tasks');
     expect(screen.queryByText('Start with one small next step.')).toBeNull();
     const create = screen.getByRole('button', { name: 'New task' });
     expect(create.hasAttribute('disabled')).toBe(false);
@@ -192,9 +201,7 @@ describe('native workspace Tasks member and access interactions', () => {
     state.value.canCreate = false;
     state.value.scanProgress = { completed: 0, total: 0 };
     render(<Component />);
-    expect(screen.getByRole('status').textContent).toBe(
-      'Checking workspace access…'
-    );
+    expect(screen.getByRole('status').textContent).toBe('Loading tasks…');
     expect(
       screen.getByRole('button', { name: 'New task' }).hasAttribute('disabled')
     ).toBe(true);
@@ -258,7 +265,9 @@ describe('native workspace Tasks member and access interactions', () => {
     ).toBe(true);
     expect(dialog().queryByRole('button', { name: 'Save changes' })).toBeNull();
     expect(dialog().queryByRole('button', { name: 'Archive' })).toBeNull();
-    fireEvent.click(dialog().getByRole('button', { name: 'Open document' }));
+    fireEvent.click(
+      dialog().getByRole('button', { name: 'Open original document' })
+    );
     expect(state.openDoc).toHaveBeenCalledWith('task-1');
   });
   test('revoked access conceals the already-open task instead of retaining editable stale details', () => {
@@ -407,6 +416,7 @@ describe('native workspace Tasks member and access interactions', () => {
     expect(state.openDoc).not.toHaveBeenCalled();
   });
   test('read-only context documents are visibly unavailable and cannot be submitted', async () => {
+    state.value.contextDocs = state.value.readableDocs;
     state.value.readableDocs.push({
       id: 'read-only-source',
       title: 'Read-only context',
@@ -426,54 +436,6 @@ describe('native workspace Tasks member and access interactions', () => {
     expect(dialog().getByRole('alert').textContent).toContain(
       'context document you can edit'
     );
-  });
-  test('legacy link warning does not imply private references were erased and disables new linking', () => {
-    state.value.tasks = [ticket({ legacyLinksDetected: true })];
-    render(<Component />);
-    openTask();
-    expect(dialog().getByRole('alert').textContent).toContain('sync history');
-    expect(dialog().getByRole('alert').textContent).toContain(
-      'not removed automatically'
-    );
-    expect(dialog().queryByLabelText('Context document')).toBeNull();
-    expect(dialog().getByRole('button', { name: 'Save changes' })).toBeTruthy();
-  });
-  test('legacy cleanup requires native confirmation and retains unsaved task edits', async () => {
-    state.value.tasks = [ticket({ legacyLinksDetected: true })];
-    render(<Component />);
-    openTask();
-    fireEvent.change(dialog().getByLabelText('Title'), {
-      target: { value: 'Unsaved title' },
-    });
-    fireEvent.click(
-      dialog().getByRole('button', { name: 'Remove legacy links' })
-    );
-    expect(state.value.removeLegacyLinks).not.toHaveBeenCalled();
-    expect(screen.getByRole('alertdialog').textContent).toContain(
-      'Old sync history and backups may retain'
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Keep links' }));
-    expect(state.value.removeLegacyLinks).not.toHaveBeenCalled();
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    fireEvent.click(
-      dialog().getByRole('button', { name: 'Remove legacy links' })
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Remove links' }));
-    await waitFor(() =>
-      expect(state.value.removeLegacyLinks).toHaveBeenCalledWith('task-1')
-    );
-    expect(window.confirm).not.toHaveBeenCalled();
-    expect((dialog().getByLabelText('Title') as HTMLInputElement).value).toBe(
-      'Unsaved title'
-    );
-  });
-  test('read-only users receive no legacy cleanup action', () => {
-    state.value.tasks = [ticket({ legacyLinksDetected: true, canEdit: false })];
-    render(<Component />);
-    openTask();
-    expect(
-      dialog().queryByRole('button', { name: 'Remove legacy links' })
-    ).toBeNull();
   });
   test('an untouched read-only dialog follows live status and owner changes', async () => {
     state.value.tasks = [ticket({ canEdit: false })];
@@ -529,5 +491,27 @@ describe('native workspace Tasks member and access interactions', () => {
         100
       )
     );
+  });
+  test('creates an independent task with description without opening a document', async () => {
+    state.value.tasks = [];
+    render(<Component />);
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+    fireEvent.change(dialog().getByLabelText('Title'), {
+      target: { value: 'Prepare demo' },
+    });
+    fireEvent.change(dialog().getByLabelText('Description'), {
+      target: { value: 'Record a short demo and review it.' },
+    });
+    fireEvent.click(dialog().getByRole('button', { name: 'Create task' }));
+    await waitFor(() =>
+      expect(state.value.createTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Prepare demo',
+          description: 'Record a short demo and review it.',
+          linkedDocIds: [],
+        })
+      )
+    );
+    expect(state.openDoc).not.toHaveBeenCalled();
   });
 });

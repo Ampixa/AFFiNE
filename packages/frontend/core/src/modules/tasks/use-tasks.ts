@@ -1,221 +1,138 @@
-import { UserFriendlyError } from '@affine/error';
 import { useLiveData, useServices } from '@toeverything/infra';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Subscription } from 'rxjs';
-import {
-  applyUpdate,
-  Doc as YDoc,
-  encodeStateAsUpdate,
-  Text as YText,
-} from 'yjs';
 
 import { AuthService, WorkspaceServerService } from '../cloud';
-import { type Doc, DocsService } from '../doc';
-import { GuardService, WorkspacePermissionService } from '../permissions';
+import { GuardService } from '../permissions';
 import { NbstoreService } from '../storage';
 import { WorkspaceService } from '../workspace';
-import { removeLegacyLinkReferences } from './legacy-links';
 import {
   type CreateTaskInput,
-  readTask,
-  SOURCE_TASKS_MAP,
   type Task,
-  TASK_HISTORY_MAP,
-  TASK_LINKS_MAP,
-  TASK_MAP,
   type TaskPatch,
   validateTaskPatch,
 } from './model';
 
-type OpenDoc = {
-  doc: Pick<Doc, 'yDoc' | 'title$' | 'trash$'>;
-  release: () => void;
-  stop: () => void;
-  canEdit: boolean;
+type ContextDoc = { id: string; title: string; canEdit: boolean };
+type TaskPage = {
+  tasks: Task[];
+  canCreate: boolean;
+  linkedDocs: ContextDoc[];
+  nextCursor: string | null;
 };
+type ContextPage = { docs: ContextDoc[]; nextCursor: string | null };
 
-/** Task data lives in each protected document, never workspace-wide metadata. */
-export function useTasks() {
+/** Team tasks are database rows. No document editor or document snapshot is opened. */
+export function useTasks(options: { docId?: string } = {}) {
   const {
-    docsService,
-    guardService,
     workspaceService,
     workspaceServerService,
     nbstoreService,
-    workspacePermissionService,
+    guardService,
   } = useServices({
-    DocsService,
-    GuardService,
     WorkspaceService,
     WorkspaceServerService,
     NbstoreService,
-    WorkspacePermissionService,
+    GuardService,
   });
-  const ids = useLiveData(docsService.list.nonTrashDocsIds$);
-  const idsKey = ids.join('\n');
   const workspace = workspaceService.workspace;
-  const isLocal =
-    workspace.flavour === 'local' && !workspace.openOptions.isSharedMode;
-  const auth = workspaceServerService.server?.scope.get(AuthService);
-  const currentUserId = useLiveData(auth?.session.account$)?.id ?? null;
+  const server = workspaceServerService.server;
+  const account = useLiveData(server?.scope.get(AuthService).session.account$);
+  const isLocal = workspace.flavour === 'local';
+  const available =
+    !isLocal &&
+    !workspace.openOptions.isSharedMode &&
+    !!server &&
+    !!account?.id;
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [readableDocs, setReadableDocs] = useState<
-    { id: string; title: string; canEdit: boolean }[]
-  >([]);
-  const [loading, setLoading] = useState(true);
-  const [scanProgress, setScanProgress] = useState({ completed: 0, total: 0 });
+  const [linkedDocs, setLinkedDocs] = useState<ContextDoc[]>([]);
+  const [contextDocs, setContextDocs] = useState<ContextDoc[]>([]);
+  const [contextCursor, setContextCursor] = useState<string | null>(null);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [loading, setLoading] = useState(available);
   const [error, setError] = useState<string | null>(null);
   const [canCreate, setCanCreate] = useState(false);
-  const held = useRef(new Map<string, OpenDoc>());
-  const snapshots = useRef(new Map<string, YDoc>());
-  const readableIds = useRef(new Set<string>());
   const mounted = useRef(false);
   const generation = useRef(0);
-  const scanning = useRef<Promise<void> | null>(null);
-  const accessWatches = useRef(new Map<string, Subscription>());
-  const watchedIds = useRef(new Set<string>());
-  const invalidateAccess = useRef<(retry: boolean) => void>(() => {});
-  const requestRefresh = useRef<() => void>(() => {});
-  const stopAccessWatches = useCallback(() => {
-    for (const subscription of accessWatches.current.values())
-      subscription.unsubscribe();
-    accessWatches.current.clear();
-    watchedIds.current.clear();
-  }, []);
-  const publish = useCallback(() => {
-    if (!mounted.current) return;
-    const result: Task[] = [];
-    const sourcesByTask = new Map<string, string[]>();
-    const taskByToken = new Map<string, string>();
-    held.current.forEach(({ doc }, taskId) => {
-      if (
-        !readableIds.current.has(taskId) ||
-        doc.trash$.value ||
-        (!isLocal && !watchedIds.current.has(taskId))
-      )
-        return;
-      const fields = doc.yDoc.getMap(TASK_MAP);
-      const token = fields.get('linkToken');
-      if (fields.get('schemaVersion') === 1 && typeof token === 'string')
-        taskByToken.set(token, taskId);
-    });
-    held.current.forEach(({ doc }, sourceId) => {
-      if (
-        !readableIds.current.has(sourceId) ||
-        doc.trash$.value ||
-        (!isLocal && !watchedIds.current.has(sourceId))
-      )
-        return;
-      doc.yDoc.getMap(SOURCE_TASKS_MAP).forEach((linked, token) => {
-        const taskId = taskByToken.get(token);
-        if (linked !== true || !taskId) return;
-        const sources = sourcesByTask.get(taskId) ?? [];
-        sources.push(sourceId);
-        sourcesByTask.set(taskId, sources);
+  const pending = useRef<Promise<void> | null>(null);
+  const contextRequest = useRef(0);
+  const contextQuery = useRef('');
+  const contextCursorRef = useRef<string | null>(null);
+  const watches = useRef(new Map<string, Subscription>());
+  const watchReady = useRef(new Map<string, Promise<boolean>>());
+  const watchSettled = useRef(new Set<string>());
+  const linkedWatchIds = useRef(new Set<string>());
+  const contextWatchIds = useRef(new Set<string>());
+  const invalidate = useRef<(retry: boolean) => void>(() => {});
+  const base = `/api/workspaces/${encodeURIComponent(workspace.id)}/tasks`;
+
+  const request = useCallback(
+    async <T>(path: string, method = 'GET', body?: unknown): Promise<T> => {
+      if (!available || !server)
+        throw new Error('Team tasks require a signed-in workspace.');
+      const csrf = document.cookie
+        .split(';')
+        .map(value => value.trim())
+        .find(value => value.startsWith('affine_csrf_token='))
+        ?.slice('affine_csrf_token='.length);
+      const response = await server.fetch(base + path, {
+        method,
+        credentials: 'include',
+        headers: {
+          Accept: 'application/json',
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          ...(method !== 'GET' && csrf ? { 'x-affine-csrf-token': csrf } : {}),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-    });
-    held.current.forEach(({ doc, canEdit }, id) => {
-      if (
-        !readableIds.current.has(id) ||
-        doc.trash$.value ||
-        (!isLocal && !watchedIds.current.has(id))
-      )
-        return;
-      const task = readTask(
-        id,
-        doc.title$.value,
-        doc.yDoc.getMap(TASK_MAP),
-        doc.yDoc.getMap(TASK_LINKS_MAP),
-        doc.yDoc.getMap(TASK_HISTORY_MAP),
-        canEdit
-      );
-      if (task)
-        result.push({
-          ...task,
-          linkedDocIds: (sourcesByTask.get(id) ?? []).sort(),
-        });
-    });
-    setTasks(result.sort((a, b) => b.updatedAt - a.updatedAt));
-  }, [isLocal]);
-  const allowed = useCallback(
-    async (
-      action: 'Doc_Read' | 'Doc_Update' | 'Doc_Users_Read',
-      id: string
-    ) => {
-      if (workspace.openOptions.isSharedMode) return false;
-      if (isLocal) return true;
-      try {
-        return await guardService.can(action, id);
-      } catch (failure) {
-        if (UserFriendlyError.fromAny(failure).is('DOC_ACTION_DENIED'))
-          return false;
-        // Server diagnostic messages can contain inaccessible document IDs.
-        throw new Error('Could not verify document access. Please retry.');
-      }
+      return response.status === 204
+        ? (undefined as T)
+        : (response.json() as Promise<T>);
     },
-    [guardService, isLocal, workspace]
+    [available, server, base]
   );
-  const drop = useCallback((id: string) => {
-    const entry = held.current.get(id);
-    if (entry) {
-      entry.stop();
-      entry.release();
-      held.current.delete(id);
-    }
+
+  const clearWatches = useCallback(() => {
+    watches.current.forEach(subscription => subscription.unsubscribe());
+    watches.current.clear();
+    watchReady.current.clear();
+    watchSettled.current.clear();
+    linkedWatchIds.current.clear();
+    contextWatchIds.current.clear();
   }, []);
-  const openForRead = useCallback(
-    (id: string) => {
-      if (isLocal) {
-        const opened = docsService.open(id);
-        return { ...opened, load: () => opened.doc.waitForSyncReady() };
+
+  const watchDocument = useCallback(
+    (id: string): Promise<boolean> => {
+      const existing = watchReady.current.get(id);
+      if (existing) {
+        const pendingReady = !watchSettled.current.has(id);
+        const subscription = watches.current.get(id);
+        return existing.then(() => {
+          if (
+            !subscription ||
+            subscription.closed ||
+            watches.current.get(id) !== subscription
+          )
+            throw new Error(
+              'Document access listener changed. Refresh to verify access.'
+            );
+          return pendingReady;
+        });
       }
-      const record = docsService.list.doc$(id).value;
-      const server = workspaceServerService.server;
-      if (!record || !server) throw new Error('Document unavailable.');
-      // Discovery must not initialize editors, run document migrations, connect
-      // writable Yjs documents, or enqueue indexing/sync for every workspace doc.
-      const yDoc = new YDoc({ guid: id });
-      const abort = new AbortController();
-      snapshots.current.set(id, yDoc);
-      return {
-        doc: { yDoc, title$: record.title$, trash$: record.trash$ },
-        load: async () => {
-          const response = await server.fetch(
-            `/api/workspaces/${encodeURIComponent(workspace.id)}/docs/${encodeURIComponent(id)}/task-snapshot`,
-            {
-              signal: abort.signal,
-              headers: { Accept: 'application/octet-stream' },
-            }
-          );
-          const update = new Uint8Array(await response.arrayBuffer());
-          if (!abort.signal.aborted) applyUpdate(yDoc, update, 'task-snapshot');
-        },
-        release: () => {
-          abort.abort();
-          if (snapshots.current.get(id) === yDoc) snapshots.current.delete(id);
-          yDoc.destroy();
-        },
-      };
-    },
-    [docsService, isLocal, workspace.id, workspaceServerService]
-  );
-  const watchAccess = useCallback(
-    async (id: string) => {
-      if (isLocal || watchedIds.current.has(id)) return;
-      const subscriptions = new Subscription();
-      accessWatches.current.set(id, subscriptions);
+      const subscription = new Subscription();
+      watches.current.set(id, subscription);
       const ready = (topic: 'doc.share-state.changed' | 'doc.grants.changed') =>
         new Promise<void>((resolve, reject) => {
           let initialized = false;
           const timer = setTimeout(
-            () => reject(new Error('Access updates unavailable.')),
-            15000
+            () => reject(new Error('Document access updates are unavailable.')),
+            10000
           );
-          subscriptions.add(() => {
+          subscription.add(() => {
             clearTimeout(timer);
             resolve();
           });
-          subscriptions.add(
+          subscription.add(
             nbstoreService.realtime
               .subscribe(topic, { workspaceId: workspace.id, docId: id })
               .subscribe({
@@ -228,254 +145,191 @@ export function useTasks() {
                     initialized = true;
                     clearTimeout(timer);
                     resolve();
-                  } else invalidateAccess.current(true);
+                  } else invalidate.current(true);
                 },
                 error: () => {
                   clearTimeout(timer);
-                  reject(new Error('Access updates unavailable.'));
-                  invalidateAccess.current(false);
+                  reject(new Error('Document access updates are unavailable.'));
+                  invalidate.current(false);
                 },
               })
           );
         });
-      try {
-        await ready('doc.share-state.changed');
-        if (subscriptions.closed) return;
-        if (await allowed('Doc_Users_Read', id))
-          await ready('doc.grants.changed');
-        if (subscriptions.closed) return;
-        if (!(await allowed('Doc_Read', id)))
-          throw new Error('Document access changed.');
-        if (!subscriptions.closed) watchedIds.current.add(id);
-      } catch (error) {
-        subscriptions.unsubscribe();
-        if (accessWatches.current.get(id) === subscriptions) {
-          accessWatches.current.delete(id);
-          watchedIds.current.delete(id);
+      const operation = (async () => {
+        try {
+          await ready('doc.share-state.changed');
+          if (
+            !subscription.closed &&
+            (await guardService.can('Doc_Users_Read', id))
+          )
+            await ready('doc.grants.changed');
+          if (subscription.closed || watches.current.get(id) !== subscription)
+            throw new Error(
+              'Document access listener changed. Refresh to verify access.'
+            );
+          watchSettled.current.add(id);
+          return true;
+        } catch (cause) {
+          subscription.unsubscribe();
+          if (watches.current.get(id) === subscription) {
+            watches.current.delete(id);
+            watchReady.current.delete(id);
+            watchSettled.current.delete(id);
+          }
+          throw cause;
         }
-        throw error;
-      }
+      })();
+      watchReady.current.set(id, operation);
+      return operation;
     },
-    [allowed, isLocal, nbstoreService, workspace.id]
+    [nbstoreService, workspace.id, guardService]
   );
-  const refresh = useCallback(async () => {
-    // Ordinary refreshes must not restart a slow scan. Access events explicitly
-    // clear this promise and invalidate its generation before rechecking.
-    if (scanning.current) return scanning.current;
-    const token = ++generation.current;
-    const active = () => mounted.current && generation.current === token;
-    const run = (async () => {
+
+  const assertWatched = useCallback((ids: ReadonlySet<string>) => {
+    for (const id of ids) {
+      const subscription = watches.current.get(id);
+      if (!subscription || subscription.closed || !watchSettled.current.has(id))
+        throw new Error(
+          'Document access listener changed. Refresh to verify access.'
+        );
+    }
+  }, []);
+
+  const fetchPages = useCallback(async (): Promise<TaskPage> => {
+    const all: TaskPage = {
+      tasks: [],
+      linkedDocs: [],
+      canCreate: false,
+      nextCursor: null,
+    };
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+    for (let page = 0; page < 100; page++) {
+      const query = new URLSearchParams({ limit: '100' });
+      if (cursor) query.set('cursor', cursor);
+      if (options.docId) query.set('docId', options.docId);
+      const result = await request<TaskPage>('?' + query.toString());
+      all.tasks.push(...result.tasks);
+      all.linkedDocs.push(...result.linkedDocs);
+      all.canCreate = result.canCreate;
+      if (!result.nextCursor) return all;
+      if (cursors.has(result.nextCursor))
+        throw new Error(
+          'Task pagination did not advance. Refresh to try again.'
+        );
+      cursors.add(result.nextCursor);
+      cursor = result.nextCursor;
+    }
+    throw new Error('This workspace has too many tasks to load in one view.');
+  }, [options.docId, request]);
+
+  const refresh = useCallback((): Promise<void> => {
+    if (!available) return Promise.resolve();
+    if (pending.current) return pending.current;
+    const version = generation.current;
+    const active = () => mounted.current && version === generation.current;
+    const operation = (async () => {
+      setLoading(true);
       try {
-        if (!isLocal)
-          await workspacePermissionService.permission.waitForRevalidation();
+        let result = await fetchPages();
         if (!active()) return;
-        const create =
-          !workspace.openOptions.isSharedMode &&
-          (isLocal || (await guardService.can('Workspace_CreateDoc')));
-        if (!active()) return;
-        setCanCreate(create);
-        const visible: { id: string; title: string; canEdit: boolean }[] = [];
-        const readable = new Set<string>();
-        let incomplete = false;
-        const scanDoc = async (id: string) => {
-          if (!active()) return;
-          const canRead = await allowed('Doc_Read', id);
-          if (!active()) return;
-          if (!canRead) {
-            drop(id);
-            return;
-          }
-          const record = docsService.list.doc$(id).value;
-          if (!record || record.trash$.value) {
-            drop(id);
-            return;
-          }
-          readable.add(id);
-          let entry = held.current.get(id);
-          if (!entry) {
-            const opened = openForRead(id);
-            try {
-              // Read the current authorized snapshot without entering the editor
-              // lifecycle. Abandon slow reads and report incomplete coverage.
-              let loadTimer: ReturnType<typeof setTimeout> | undefined;
-              let loaded: boolean;
-              try {
-                loaded = await Promise.race([
-                  (async () => {
-                    await opened.load();
-                    return true;
-                  })(),
-                  new Promise<false>(resolve => {
-                    loadTimer = setTimeout(() => resolve(false), 5000);
-                  }),
-                ]);
-              } finally {
-                clearTimeout(loadTimer);
-              }
-              if (!loaded) {
-                opened.release();
-                readable.delete(id);
-                const index = visible.findIndex(item => item.id === id);
-                if (index >= 0) visible.splice(index, 1);
-                incomplete = true;
-                return;
-              }
-              if (!active() || !(await allowed('Doc_Read', id))) {
-                opened.release();
-                readable.delete(id);
-                const index = visible.findIndex(item => item.id === id);
-                if (index >= 0) visible.splice(index, 1);
-                return;
-              }
-              // Storage updates are applied to isolated snapshots, never back
-              // into writable storage. Keep empty sources for future links.
-              const canEdit = await allowed('Doc_Update', id);
-              if (!active()) {
-                opened.release();
-                return;
-              }
-              entry = { ...opened, canEdit, stop: () => {} };
-              const emit = () => {
-                publish();
-                // Newly arriving tasks/relations must establish their access
-                // listeners before they become visible.
-                if (!isLocal && !watchedIds.current.has(id))
-                  requestRefresh.current();
-              };
-              opened.doc.yDoc.on('afterTransaction', emit);
-              const titleSubscription = opened.doc.title$.subscribe(emit);
-              entry.stop = () => {
-                opened.doc.yDoc.off('afterTransaction', emit);
-                titleSubscription.unsubscribe();
-              };
-              held.current.set(id, entry);
-            } catch (e) {
-              opened.release();
-              throw e;
-            }
-          } else {
-            const canEdit = await allowed('Doc_Update', id);
+        // Only linked documents and legacy detail documents need access listeners.
+        // Ordinary documents are never scanned to find tasks.
+        let ids = new Set<string>();
+        let stable = false;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          ids = new Set([
+            ...result.linkedDocs.map(doc => doc.id),
+            ...result.tasks.flatMap(task =>
+              task.detailDocId ? [task.detailDocId] : []
+            ),
+          ]);
+          let subscribed = false;
+          for (const id of ids) {
+            subscribed = (await watchDocument(id)) || subscribed;
             if (!active()) return;
-            entry.canEdit = canEdit;
           }
-          visible.push({
-            id,
-            title: record.title$.value || 'Untitled',
-            canEdit: entry.canEdit,
-          });
-        };
-        const pendingIds = [...docsService.list.nonTrashDocsIds$.value];
-        let next = 0;
-        let completed = 0;
-        setScanProgress({ completed, total: pendingIds.length });
-        // Bound network and document-loading work without serializing the whole
-        // workspace behind one round trip per permission check.
-        await Promise.all(
-          Array.from({ length: Math.min(2, pendingIds.length) }, async () => {
-            while (active() && next < pendingIds.length) {
-              await scanDoc(pendingIds[next++]);
-              if (active())
-                setScanProgress({
-                  completed: ++completed,
-                  total: pendingIds.length,
-                });
-            }
+          if (!subscribed) {
+            stable = true;
+            break;
+          }
+          // Re-fetch until the returned set has no unwatched additions.
+          result = await fetchPages();
+          if (!active()) return;
+        }
+        if (!stable)
+          throw new Error(
+            'Task links are changing. Refresh to verify access again.'
+          );
+        linkedWatchIds.current = ids;
+        for (const [id, subscription] of watches.current)
+          if (!ids.has(id) && !contextWatchIds.current.has(id)) {
+            subscription.unsubscribe();
+            watches.current.delete(id);
+            watchReady.current.delete(id);
+            watchSettled.current.delete(id);
+          }
+        assertWatched(ids);
+        setTasks(previous =>
+          result.tasks.map(task => {
+            const old = previous.find(value => value.id === task.id);
+            return {
+              ...task,
+              history:
+                old?.updatedAt === task.updatedAt ? old.history : task.history,
+            };
           })
         );
-        if (!active()) return;
-        for (const id of held.current.keys()) if (!readable.has(id)) drop(id);
-        // Watch only actual tasks and sources linked to those tasks. Opening
-        // Tasks must not authorize hundreds of irrelevant document listeners.
-        const relevant = new Set<string>();
-        const tokens = new Set<string>();
-        for (const [id, entry] of held.current) {
-          if (!readable.has(id)) continue;
-          const fields = entry.doc.yDoc.getMap(TASK_MAP);
-          if (fields.get('schemaVersion') !== 1) continue;
-          relevant.add(id);
-          const token = fields.get('linkToken');
-          if (typeof token === 'string') tokens.add(token);
-        }
-        for (const [id, entry] of held.current) {
-          if (!readable.has(id)) continue;
-          entry.doc.yDoc.getMap(SOURCE_TASKS_MAP).forEach((linked, token) => {
-            if (linked === true && tokens.has(token)) relevant.add(id);
-          });
-        }
-        for (const id of relevant) {
-          await watchAccess(id);
-          if (!active()) return;
-        }
-        for (const [id, subscription] of accessWatches.current) {
-          if (!relevant.has(id)) {
-            subscription.unsubscribe();
-            accessWatches.current.delete(id);
-            watchedIds.current.delete(id);
-          }
-        }
-        readableIds.current = readable;
-        setReadableDocs(visible);
-        setCanCreate(create);
-        setError(
-          incomplete
-            ? 'Some documents are still syncing. Task results may be incomplete; refresh to retry.'
-            : null
-        );
-        publish();
-      } catch {
+        setLinkedDocs([
+          ...new Map(result.linkedDocs.map(doc => [doc.id, doc])).values(),
+        ]);
+        setCanCreate(result.canCreate);
+        setError(null);
+      } catch (cause) {
         if (active()) {
-          generation.current++;
-          setLoading(false);
-          setError(
-            'Could not verify task access. Please refresh and try again.'
-          );
           setTasks([]);
-          setReadableDocs([]);
+          setLinkedDocs([]);
+          setContextDocs([]);
           setCanCreate(false);
-          readableIds.current.clear();
-          for (const id of held.current.keys()) drop(id);
-          stopAccessWatches();
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : 'Could not verify task access.'
+          );
         }
+        throw cause;
       } finally {
-        if (active()) setLoading(false);
+        if (active()) {
+          pending.current = null;
+          setLoading(false);
+        }
       }
     })();
-    scanning.current = run;
-    try {
-      await run;
-    } finally {
-      if (scanning.current === run) scanning.current = null;
-    }
-  }, [
-    allowed,
-    docsService,
-    drop,
-    guardService,
-    isLocal,
-    openForRead,
-    publish,
-    workspace,
-    workspacePermissionService,
-    watchAccess,
-    stopAccessWatches,
-  ]);
-  const reportRefreshError = useCallback(() => {
-    if (mounted.current) setError('Could not refresh tasks. Please try again.');
-  }, []);
+    pending.current = operation;
+    return operation;
+  }, [available, fetchPages, watchDocument, assertWatched]);
+
   useEffect(() => {
-    const openedDocs = held.current;
     mounted.current = true;
-    requestRefresh.current = () => void refresh().catch(reportRefreshError);
-    invalidateAccess.current = retry => {
+    const cancelPending = () => {
       generation.current++;
-      scanning.current = null;
-      readableIds.current.clear();
-      stopAccessWatches();
-      for (const id of held.current.keys()) drop(id);
-      setCanCreate(false);
+      contextRequest.current++;
+      pending.current = null;
+    };
+    const clear = () => {
+      cancelPending();
+      clearWatches();
       setTasks([]);
-      setReadableDocs([]);
-      if (retry) void refresh().catch(reportRefreshError);
+      setLinkedDocs([]);
+      setContextDocs([]);
+      setContextCursor(null);
+      contextCursorRef.current = null;
+      setContextLoading(false);
+      setCanCreate(false);
+    };
+    invalidate.current = retry => {
+      clear();
+      if (retry) void refresh().catch(() => {});
       else {
         setLoading(false);
         setError(
@@ -483,420 +337,285 @@ export function useTasks() {
         );
       }
     };
-    const stopSnapshotUpdates = isLocal
-      ? undefined
-      : workspace.engine.doc.storage.subscribeDocUpdate(update => {
-          const snapshot = snapshots.current.get(update.docId);
-          if (snapshot)
-            applyUpdate(snapshot, update.bin, 'task-storage-update');
-        });
-    void refresh().catch(reportRefreshError);
-    // Realtime access events remain immediate. Full-workspace sweeps are only
-    // a fallback: avoid repeated ACL traffic from idle tabs and focus flapping.
-    let lastBackgroundRefresh = Date.now();
-    const backgroundRefresh = () => {
-      if (
-        document.visibilityState === 'hidden' ||
-        Date.now() - lastBackgroundRefresh < 30000
-      )
-        return;
-      lastBackgroundRefresh = Date.now();
-      void refresh().catch(reportRefreshError);
-    };
-    const timer = setInterval(backgroundRefresh, 5 * 60 * 1000);
-    const onFocus = backgroundRefresh;
-    window.addEventListener('focus', onFocus);
-    let accessReady = false;
-    const accessSubscription = isLocal
-      ? null
-      : nbstoreService.realtime
-          .subscribe('workspace.access.changed', { workspaceId: workspace.id })
-          .subscribe({
-            next: event => {
-              if ('type' in event && event.type === 'ready' && !accessReady) {
-                accessReady = true;
-                return;
-              }
-              invalidateAccess.current(true);
-            },
-            error: () => {
-              invalidateAccess.current(false);
-            },
-          });
+    if (!available) {
+      clear();
+      setLoading(false);
+      return () => {
+        mounted.current = false;
+        clearWatches();
+      };
+    }
+    let ready = false;
+    const subscription = nbstoreService.realtime
+      .subscribe('workspace.access.changed', { workspaceId: workspace.id })
+      .subscribe({
+        next: event => {
+          if ('type' in event && event.type === 'ready' && !ready) {
+            ready = true;
+            void refresh().catch(() => {});
+          } else invalidate.current(true);
+        },
+        error: () => invalidate.current(false),
+      });
+    const timer = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void refresh().catch(() => {});
+    }, 30000);
+    const focus = () => invalidate.current(true);
+    window.addEventListener('focus', focus);
     return () => {
       mounted.current = false;
-      // Invalidate the latest asynchronous scan, not the generation at effect setup.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      generation.current++;
-      scanning.current = null;
+      cancelPending();
       clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
-      accessSubscription?.unsubscribe();
-      stopSnapshotUpdates?.();
-      stopAccessWatches();
-      invalidateAccess.current = () => {};
-      requestRefresh.current = () => {};
-      for (const id of openedDocs.keys()) drop(id);
+      window.removeEventListener('focus', focus);
+      subscription.unsubscribe();
+      clearWatches();
+      invalidate.current = () => {};
     };
   }, [
-    currentUserId,
-    drop,
-    idsKey,
-    isLocal,
+    available,
+    clearWatches,
     nbstoreService,
     refresh,
-    reportRefreshError,
-    workspace.engine.doc.storage,
-    stopAccessWatches,
     workspace.id,
+    account?.id,
   ]);
 
-  const verifyAssignee = useCallback(
-    async (id: string | null | undefined) => {
-      if (!id) return;
-      if (isLocal) {
-        if (id !== currentUserId)
-          throw new Error(
-            'Local workspaces do not have a team directory. Leave the task unassigned.'
-          );
+  const searchDocuments = useCallback(
+    async (query: string, more = false) => {
+      if (!available) return;
+      if (query.trim().length < 2) {
+        contextRequest.current++;
+        contextWatchIds.current.clear();
+        contextCursorRef.current = null;
+        for (const [id, subscription] of watches.current)
+          if (!linkedWatchIds.current.has(id)) {
+            subscription.unsubscribe();
+            watches.current.delete(id);
+            watchReady.current.delete(id);
+            watchSettled.current.delete(id);
+          }
+        setContextDocs([]);
+        setContextCursor(null);
+        setContextLoading(false);
         return;
       }
-      let skip = 0;
-      while (true) {
-        const result = await nbstoreService.realtime.request(
-          'workspace.members.get',
-          { workspaceId: workspace.id, skip, take: 100 },
-          { timeoutMs: 10000 }
+      const version = ++contextRequest.current;
+      const accessVersion = generation.current;
+      const cursor = more ? contextCursorRef.current : null;
+      contextQuery.current = query;
+      setContextLoading(true);
+      if (!more) {
+        setContextDocs([]);
+        setContextCursor(null);
+      }
+      try {
+        const params = new URLSearchParams({ q: query, limit: '50' });
+        if (cursor) params.set('cursor', cursor);
+        let result = await request<ContextPage>(
+          '/context-docs?' + params.toString()
         );
         if (
-          result.members.some(
-            member => member.id === id && member.status === 'Accepted'
-          )
+          !mounted.current ||
+          version !== contextRequest.current ||
+          accessVersion !== generation.current
         )
           return;
-        if (result.members.length < 100) break;
-        skip += 100;
-      }
-      throw new Error('This assignee is no longer a workspace member.');
-    },
-    [currentUserId, isLocal, nbstoreService, workspace.id]
-  );
-  const acknowledgeWrite = useCallback(
-    async (id: string) => {
-      if (isLocal) return;
-      try {
-        await workspace.engine.doc.waitForSynced(
-          id,
-          AbortSignal.timeout(15000)
-        );
-      } catch {
-        // Keep the local change for native sync to recover; never retry the
-        // mutation or claim the server has saved an unacknowledged change.
-        const message =
-          'Change saved locally, but server sync was not confirmed. Keep this tab open and check your connection before leaving.';
-        setError(message);
-        throw new Error(message);
-      }
-    },
-    [isLocal, workspace.engine.doc]
-  );
-  const withWritable = useCallback(
-    async (id: string, action: (doc: Doc) => Promise<void> | void) => {
-      if (!isLocal)
-        await workspacePermissionService.permission.waitForRevalidation();
-      if (
-        !(await allowed('Doc_Read', id)) ||
-        !(await allowed('Doc_Update', id))
-      )
-        throw new Error('You no longer have permission to edit this task.');
-      const opened = docsService.open(id);
-      try {
-        await opened.doc.waitForSyncReady();
-        if (!(await allowed('Doc_Update', id)))
-          throw new Error('Task editing access changed.');
-        await action(opened.doc);
-        await acknowledgeWrite(id);
-        const snapshot = snapshots.current.get(id);
-        if (snapshot)
-          applyUpdate(
-            snapshot,
-            encodeStateAsUpdate(opened.doc.yDoc),
-            'task-local-edit'
+        let ids = new Set<string>();
+        let stable = false;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          ids = new Set(
+            more
+              ? [...contextWatchIds.current, ...result.docs.map(doc => doc.id)]
+              : result.docs.map(doc => doc.id)
           );
-      } finally {
-        opened.release();
-      }
-      await refresh();
-    },
-    [
-      acknowledgeWrite,
-      allowed,
-      docsService,
-      isLocal,
-      refresh,
-      workspacePermissionService,
-    ]
-  );
-  const audit = useCallback(
-    (doc: Doc, body: string) =>
-      doc.yDoc.getMap(TASK_HISTORY_MAP).set(crypto.randomUUID(), {
-        actorId: currentUserId,
-        at: Date.now(),
-        body,
-      }),
-    [currentUserId]
-  );
-  const linkDocument = useCallback(
-    async (taskId: string, sourceId: string) => {
-      if (taskId === sourceId) throw new Error('A task cannot link to itself.');
-      if (
-        !(await allowed('Doc_Read', taskId)) ||
-        !(await allowed('Doc_Update', taskId))
-      )
-        throw new Error('You no longer have permission to link this task.');
-      // The source owns the relation. Never copy its identifier, title, or a
-      // native reference into a task that may have a broader readership.
-      await withWritable(sourceId, async source => {
-        const opened = docsService.open(taskId);
-        try {
-          await opened.doc.waitForSyncReady();
-          if (
-            !(await allowed('Doc_Read', taskId)) ||
-            !(await allowed('Doc_Update', taskId))
-          )
-            throw new Error('Task access changed while linking.');
-          if (opened.doc.yDoc.getMap(TASK_MAP).get('schemaVersion') !== 1)
-            throw new Error('This document is not a task.');
-          if (opened.doc.yDoc.getMap(TASK_LINKS_MAP).size > 0)
-            throw new Error(
-              'This task has legacy links. Remove those links and their document references before linking again.'
-            );
-          if (!(await allowed('Doc_Update', sourceId)))
-            throw new Error(
-              'You need edit access to the context document to link it.'
-            );
-          const fields = opened.doc.yDoc.getMap(TASK_MAP);
-          let token = fields.get('linkToken');
-          if (typeof token !== 'string' || !token) {
-            token = crypto.randomUUID();
-            fields.set('linkToken', token);
+          contextWatchIds.current = ids;
+          let subscribed = false;
+          for (const id of ids) {
+            subscribed = (await watchDocument(id)) || subscribed;
+            if (
+              !mounted.current ||
+              version !== contextRequest.current ||
+              accessVersion !== generation.current
+            )
+              return;
           }
-          // The token cannot identify a task without access to its document.
-          // Neither endpoint stores the other document's ID or title.
-          source.yDoc.getMap(SOURCE_TASKS_MAP).set(token as string, true);
-          await acknowledgeWrite(taskId);
-          const snapshot = snapshots.current.get(taskId);
-          if (snapshot)
-            applyUpdate(
-              snapshot,
-              encodeStateAsUpdate(opened.doc.yDoc),
-              'task-local-edit'
-            );
-        } finally {
-          opened.release();
+          if (!subscribed) {
+            stable = true;
+            break;
+          }
+          result = await request<ContextPage>(
+            '/context-docs?' + params.toString()
+          );
+          if (
+            !mounted.current ||
+            version !== contextRequest.current ||
+            accessVersion !== generation.current
+          )
+            return;
         }
-      });
+        if (!stable)
+          throw new Error(
+            'Document access is changing. Search again to verify it.'
+          );
+        contextWatchIds.current = ids;
+        for (const [id, subscription] of watches.current)
+          if (!ids.has(id) && !linkedWatchIds.current.has(id)) {
+            subscription.unsubscribe();
+            watches.current.delete(id);
+            watchReady.current.delete(id);
+            watchSettled.current.delete(id);
+          }
+        assertWatched(ids);
+        setContextDocs(previous =>
+          more ? [...previous, ...result.docs] : result.docs
+        );
+        contextCursorRef.current = result.nextCursor;
+        setContextCursor(result.nextCursor);
+      } catch (cause) {
+        if (mounted.current && version === contextRequest.current) {
+          setContextDocs([]);
+          setContextCursor(null);
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : 'Could not search documents.'
+          );
+        }
+      } finally {
+        if (mounted.current && version === contextRequest.current)
+          setContextLoading(false);
+      }
     },
-    [acknowledgeWrite, allowed, docsService, withWritable]
+    [available, request, watchDocument, assertWatched]
+  );
+
+  const loadTask = useCallback(
+    async (id: string) => {
+      const version = generation.current;
+      const assertCurrent = () => {
+        if (!mounted.current || version !== generation.current)
+          throw new Error('Task access changed. Refresh before continuing.');
+      };
+      try {
+        let task = await request<Task>('/' + encodeURIComponent(id));
+        assertCurrent();
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const ids = new Set([
+            ...task.linkedDocIds,
+            ...(task.detailDocId ? [task.detailDocId] : []),
+          ]);
+          let subscribed = false;
+          for (const docId of ids) {
+            subscribed = (await watchDocument(docId)) || subscribed;
+            assertCurrent();
+          }
+          if (!subscribed) {
+            ids.forEach(docId => linkedWatchIds.current.add(docId));
+            assertWatched(ids);
+            setTasks(previous =>
+              previous.map(value => (value.id === id ? task : value))
+            );
+            return task;
+          }
+          task = await request<Task>('/' + encodeURIComponent(id));
+          assertCurrent();
+        }
+        throw new Error(
+          'Task links are changing. Reopen the task to verify access.'
+        );
+      } catch (cause) {
+        if (mounted.current && version === generation.current)
+          invalidate.current(true);
+        throw cause;
+      }
+    },
+    [request, watchDocument, assertWatched]
   );
   const updateTask = useCallback(
     async (id: string, patch: TaskPatch, expectedUpdatedAt?: number) => {
-      let result: Task | null = null;
-      await verifyAssignee(patch.assigneeId);
-      await withWritable(id, doc => {
-        const fields = doc.yDoc.getMap(TASK_MAP);
-        const current = readTask(
-          id,
-          doc.title$.value,
-          fields,
-          doc.yDoc.getMap(TASK_LINKS_MAP),
-          doc.yDoc.getMap(TASK_HISTORY_MAP),
-          true
-        );
-        if (!current) throw new Error('This document is not a task.');
-        if (
-          expectedUpdatedAt !== undefined &&
-          current.updatedAt !== expectedUpdatedAt
-        )
-          throw new Error(
-            'This task changed while you were editing. Reopen it to review the latest version.'
-          );
-        const clean = validateTaskPatch(patch, current);
-        const changed = Object.entries(clean).filter(
-          ([key, value]) => current[key as keyof Task] !== value
-        );
-        if (!changed.length) {
-          result = current;
-          return;
-        }
-        doc.yDoc.transact(() => {
-          for (const [key, value] of changed) {
-            if (key === 'title') doc.changeDocTitle(String(value));
-            else fields.set(key, value);
-          }
-          fields.set('updatedAt', Math.max(Date.now(), current.updatedAt + 1));
-          audit(
-            doc,
-            'Updated ' +
-              changed
-                .map(([key]) => (key === 'assigneeId' ? 'owner' : key))
-                .join(', ') +
-              '.'
-          );
-        });
-        result = readTask(
-          id,
-          doc.title$.value,
-          fields,
-          doc.yDoc.getMap(TASK_LINKS_MAP),
-          doc.yDoc.getMap(TASK_HISTORY_MAP),
-          true
-        );
+      const clean = validateTaskPatch(
+        patch,
+        tasks.find(task => task.id === id)
+      );
+      if (!Object.keys(clean).length) return loadTask(id);
+      await request<Task>('/' + encodeURIComponent(id), 'PATCH', {
+        ...clean,
+        expectedUpdatedAt,
       });
-      if (!result) throw new Error('Could not read the updated task.');
-      return result as Task;
-    },
-    [audit, verifyAssignee, withWritable]
-  );
-  const removeLegacyLinks = useCallback(
-    async (id: string) => {
-      let result: Task | null = null;
-      await withWritable(id, doc => {
-        const fields = doc.yDoc.getMap(TASK_MAP);
-        const links = doc.yDoc.getMap(TASK_LINKS_MAP);
-        const history = doc.yDoc.getMap(TASK_HISTORY_MAP);
-        const current = readTask(
-          id,
-          doc.title$.value,
-          fields,
-          links,
-          history,
-          true
+      try {
+        await refresh();
+        return await loadTask(id);
+      } catch {
+        throw new Error(
+          'Task saved, but current access could not be verified. Refresh before editing again.'
         );
-        if (!current) throw new Error('This document is not a task.');
-        if (links.size === 0) {
-          result = current;
-          return;
-        }
-        const legacyIds = new Set(links.keys());
-        const texts: YText[] = [];
-        for (const model of doc.blockSuiteDoc.getAllModels()) {
-          const value = (model.props as Record<string, unknown>).text;
-          if (
-            value &&
-            typeof value === 'object' &&
-            'yText' in value &&
-            value.yText instanceof YText
-          )
-            texts.push(value.yText);
-        }
-        doc.yDoc.transact(() => {
-          removeLegacyLinkReferences(texts, legacyIds);
-          links.clear();
-          fields.set('updatedAt', Math.max(Date.now(), current.updatedAt + 1));
-          audit(
-            doc,
-            'Removed current legacy link metadata and matching references. Earlier history and backups are unchanged.'
-          );
-        });
-        result = readTask(id, doc.title$.value, fields, links, history, true);
-      });
-      if (!result) throw new Error('Could not read the cleaned task.');
-      return result as Task;
+      }
     },
-    [audit, withWritable]
+    [request, refresh, tasks, loadTask]
   );
   const createTask = useCallback(
     async (input: CreateTaskInput) => {
-      if (!isLocal)
-        await workspacePermissionService.permission.waitForRevalidation();
-      if (
-        workspace.openOptions.isSharedMode ||
-        (!isLocal && !(await guardService.can('Workspace_CreateDoc')))
-      )
-        throw new Error('You cannot create documents in this workspace.');
-      const { linkedDocIds = [], ...patch } = input;
-      const clean = validateTaskPatch(patch);
-      await verifyAssignee(clean.assigneeId);
-      for (const id of linkedDocIds)
-        if (!(await allowed('Doc_Read', id)))
-          throw new Error('A related document is no longer accessible.');
-      const record = docsService.createDoc({ title: clean.title });
-      const opened = docsService.open(record.id);
-      let createdTask: Task | null = null;
-      try {
-        const fields = opened.doc.yDoc.getMap(TASK_MAP);
-        opened.doc.yDoc.transact(() => {
-          fields.set('schemaVersion', 1);
-          fields.set('linkToken', crypto.randomUUID());
-          fields.set('status', 'inbox');
-          fields.set('priority', 'normal');
-          fields.set('archived', false);
-          for (const [key, value] of Object.entries(clean))
-            if (key !== 'title') fields.set(key, value);
-          fields.set('updatedAt', Date.now());
-          audit(opened.doc, 'Created task.');
-        });
-        createdTask = readTask(
-          record.id,
-          opened.doc.title$.value,
-          fields,
-          opened.doc.yDoc.getMap(TASK_LINKS_MAP),
-          opened.doc.yDoc.getMap(TASK_HISTORY_MAP),
-          true
-        );
-      } finally {
-        opened.release();
-      }
-      try {
-        if (!isLocal) {
-          // The next read-only HTTP snapshot must include this new task. Only its
-          // explicit creation is synced; discovery never starts document writes.
-          await workspace.engine.doc.waitForSynced(
-            record.id,
-            AbortSignal.timeout(15000)
-          );
-        }
-        for (const id of new Set(linkedDocIds))
-          await linkDocument(record.id, id);
-      } catch (e) {
-        await refresh();
-        throw Object.assign(
-          new Error(
-            `Task created locally, but syncing or linking did not finish. Open the task to retry. ${e instanceof Error ? e.message : ''}`
-          ),
-          { createdTaskId: record.id, createdTask }
-        );
-      }
-      await refresh();
-      return record.id;
+      const task = await request<Task>('', 'POST', {
+        ...validateTaskPatch(input),
+        linkedDocIds: input.linkedDocIds ?? [],
+      });
+      await refresh().catch(() => {});
+      return task.id;
     },
-    [
-      allowed,
-      audit,
-      docsService,
-      guardService,
-      isLocal,
-      linkDocument,
-      refresh,
-      verifyAssignee,
-      workspace,
-      workspacePermissionService,
-    ]
+    [request, refresh]
+  );
+  const linkDocument = useCallback(
+    async (id: string, docId: string) => {
+      await request('/' + encodeURIComponent(id) + '/links', 'POST', { docId });
+      try {
+        await refresh();
+      } catch {
+        throw new Error(
+          'Link change saved, but current access could not be verified. Refresh before continuing.'
+        );
+      }
+    },
+    [request, refresh]
+  );
+  const unlinkDocument = useCallback(
+    async (id: string, docId: string) => {
+      await request(
+        '/' + encodeURIComponent(id) + '/links/' + encodeURIComponent(docId),
+        'DELETE'
+      );
+      try {
+        await refresh();
+      } catch {
+        throw new Error(
+          'Link change saved, but current access could not be verified. Refresh before continuing.'
+        );
+      }
+    },
+    [request, refresh]
   );
   return {
     tasks,
     loading,
-    scanProgress,
     error,
-    readableDocs,
     canCreate,
     isLocal,
-    currentUserId,
+    available,
+    currentUserId: account?.id ?? null,
+    readableDocs: [
+      ...new Map(
+        [...linkedDocs, ...contextDocs].map(doc => [doc.id, doc])
+      ).values(),
+    ],
+    contextDocs,
+    contextLoading,
+    hasMoreContext: !!contextCursor,
+    searchDocuments,
+    loadMoreDocuments: () => searchDocuments(contextQuery.current, true),
     refresh,
+    loadTask,
     createTask,
     updateTask,
     linkDocument,
-    removeLegacyLinks,
+    unlinkDocument,
   };
 }

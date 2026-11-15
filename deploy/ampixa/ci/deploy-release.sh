@@ -8,6 +8,11 @@ fail() { echo "ERROR: $*" >&2; exit 1; }
 [[ $(id -u) = 0 ]] || fail 'Run with sudo bash.'
 release=$(cd -- "$1" && pwd -P)
 expected=$2
+import_workspace=${AFFINE_IMPORT_LEGACY_TASKS_WORKSPACE:-}
+if [[ -n $import_workspace ]]; then
+  [[ $import_workspace =~ ^[a-zA-Z0-9_-]{1,128}$ ]] || fail 'Invalid explicit task import workspace.'
+  [[ -f "$release/app/scripts/import-legacy-tasks.mjs" && -f /etc/affine/affine.env ]] || fail 'Task importer or protected service environment missing.'
+fi
 [[ $expected =~ ^[a-f0-9]{40}$ ]] || fail 'Use the full reviewed merge SHA.'
 [[ $(cat "$release/SOURCE_COMMIT") = "$expected" ]] || fail 'Source SHA mismatch.'
 [[ -f "$release/BUILD_VALIDATED" && -f "$release/FILES.sha256" ]] || fail 'Release is not validated.'
@@ -81,6 +86,9 @@ recover() {
   if [[ $stopped = 1 ]]; then systemctl start affine; fi
   echo "Upgrade failed (exit $code). Previous app restoration attempted. Inspect affine logs and $backup."
   echo 'No automatic database restore or gateway/configuration change was performed.'
+  if [[ -n $import_workspace ]]; then
+    echo 'If task import committed, reconcile imported rows with any later legacy edits before retrying; do not drop task tables.'
+  fi
   exit "$code"
 }
 trap 'recover $?' ERR
@@ -103,6 +111,18 @@ tar -czf "$backup/config-storage.tar.gz" -C / "${paths[@]}"
 gzip -t "$backup/config-storage.tar.gz"
 sudo -u postgres pg_restore --file=/dev/null < "$backup/affine.pgdump"
 (cd "$backup" && sha256sum affine.pgdump config-storage.tar.gz > SHA256SUMS && sha256sum -c SHA256SUMS)
+if [[ -n $import_workspace ]]; then
+  # The schema gate above still requires the reviewed additive migration first.
+  # Import only after backup and while old application writers are stopped.
+  systemd-run --quiet --wait --pipe --collect \
+    --unit="affine-task-import-$(date -u +%Y%m%dT%H%M%SZ)" \
+    --property=EnvironmentFile=/etc/affine/affine.env \
+    --property=RuntimeMaxSec=360 \
+    /opt/affine/node "$release/app/scripts/import-legacy-tasks.mjs" \
+    --workspace "$import_workspace" --apply --confirm-offline \
+    > "$backup/task-import.json"
+  echo 'Explicit workspace task import finished; original documents were retained.'
+fi
 mv /opt/affine/app "$backup/app"
 mv "$next_app" /opt/affine/app
 systemctl start affine

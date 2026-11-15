@@ -21,6 +21,8 @@ export interface TaskEvent {
 export interface Task {
   id: string;
   title: string;
+  description?: string;
+  detailDocId?: string | null;
   status: TaskStatus;
   assigneeId: string | null;
   priority: TaskPriority;
@@ -37,6 +39,7 @@ export type TaskPatch = Partial<
   Pick<
     Task,
     | 'title'
+    | 'description'
     | 'status'
     | 'assigneeId'
     | 'priority'
@@ -65,6 +68,14 @@ export function validateTaskPatch(patch: TaskPatch, current?: Task): TaskPatch {
     )
       throw new Error('Use a title between 1 and 200 characters.');
     clean.title = patch.title.trim();
+  }
+  if (patch.description !== undefined) {
+    if (
+      typeof patch.description !== 'string' ||
+      patch.description.length > 20000
+    )
+      throw new Error('Keep the description under 20,000 characters.');
+    clean.description = patch.description;
   }
   if (patch.status !== undefined) {
     if (!TASK_STATUSES.includes(patch.status))

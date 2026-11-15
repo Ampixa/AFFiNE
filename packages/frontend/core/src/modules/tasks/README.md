@@ -1,4 +1,24 @@
-# Native workspace tasks (local first-release preview)
+# Workspace tasks — dedicated task storage
+
+## Current architecture
+
+Signed-in workspace tasks are database rows, fetched through the authenticated workspace Tasks API. Loading Tasks does not enumerate document IDs, fetch document snapshots, initialize editors, or write Yjs records. Task title, description, status, assignee, priority, target date, blocker, archive state and activity are independent of supporting documents. The existing AFFiNE theme, list/board views and member selector are retained.
+
+Document connections are separate relationships. The API filters linked IDs/titles with fresh document access checks; linking never grants permission. The client establishes permission listeners for returned linked documents and imported original documents before exposing their metadata, and re-fetches until new relationship additions are covered. Access-change events clear task/context state immediately; stale in-flight responses cannot restore it. The context picker searches authorized metadata only after two characters are entered and paginates results without reading document bodies. Related tasks uses the same direct list API filtered by document ID.
+
+The task list follows opaque pagination cursors (including empty permission-filtered pages), refreshes every 30 seconds while visible, and revalidates on focus. This iteration does not yet push task field changes in realtime; permission events still invalidate immediately. Mutations use server-side optimistic version checks and CSRF protection. Confirmed writes whose follow-up verification fails are reported without replaying the mutation. Original imported document details remain accessible only when the server returns an authorized original-document ID.
+
+Local-only workspaces show that team tasks require a signed-in workspace. Existing local task documents are not scanned, deleted, or rewritten by this view. The one-time legacy import is a separately reviewed server migration; there is no automatic document scan on an ordinary Tasks request.
+
+## Validation scope
+
+Frontend hook tests use real React state with mocked HTTP/identity/event services. They verify constant-request discovery independent of workspace document count, pagination, private-context invalidation, stale-response rejection, subscription stabilization, CSRF/version handling and no automatic mutation replay. Component tests cover assignment, description editing, permission downgrade, stale drafts, context filtering and archive controls. Authenticated local replica checks and measured request timings must precede deployment; passing mocked tests alone is not a production performance claim.
+
+## Historical document-backed implementation and evidence
+
+The sections below describe earlier releases and their observed validation. They are retained as provenance, not the current storage design.
+
+### Original local first-release preview
 
 Tasks are AFFiNE documents, not a separate application or database. The desktop workspace sidebar opens `/tasks`; documents expose **Info → Related tasks** as well as the document-info dialog. Existing AFFiNE theme tokens and layout are retained.
 
