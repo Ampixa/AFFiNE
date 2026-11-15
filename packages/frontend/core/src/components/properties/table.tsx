@@ -16,6 +16,7 @@ import type {
   DatabaseValueCell,
 } from '@affine/core/modules/doc-info/types';
 import { DocIntegrationPropertiesTable } from '@affine/core/modules/integration';
+import { RelatedTasksButton } from '@affine/core/modules/tasks/related-tasks';
 import { ViewService, WorkbenchService } from '@affine/core/modules/workbench';
 import { WorkspacePropertyService } from '@affine/core/modules/workspace-property';
 import type { AffineDNDData } from '@affine/core/types/dnd';
@@ -425,6 +426,7 @@ const WorkspacePropertiesTableInner = ({
   className,
 }: WorkspacePropertiesTableProps) => {
   const [expanded, setExpanded] = useState(!!defaultOpenProperty);
+  const docService = useService(DocService);
   const defaultOpen = useMemo(() => {
     return defaultOpenProperty?.type === 'database'
       ? [
@@ -460,6 +462,10 @@ const WorkspacePropertiesTableInner = ({
           <DocDatabaseBacklinkInfo
             onChange={onDatabasePropertyChange}
             defaultOpen={defaultOpen}
+          />
+          <RelatedTasksButton
+            docId={docService.doc.id}
+            onNavigate={() => setExpanded(false)}
           />
         </Collapsible.Content>
       </Collapsible.Root>

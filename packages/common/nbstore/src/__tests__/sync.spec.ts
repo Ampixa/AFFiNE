@@ -789,3 +789,58 @@ test('indexer completion waits for the current job to finish', async () => {
     sync.stop();
   }
 });
+
+test('targeted retry pulls an old newly granted document without remote writes', async () => {
+  const local = new IndexedDBDocStorage({
+    id: 'ws-grant-retry',
+    flavour: 'local',
+    type: 'workspace',
+  });
+  const metadata = new IndexedDBDocSyncStorage({
+    id: 'ws-grant-retry',
+    flavour: 'local',
+    type: 'workspace',
+  });
+  const remote = new PermissionDeniedRemoteDocStorage('ws-grant-retry');
+  let allowed = false;
+  let reads = 0;
+  const doc = new YDoc();
+  doc.getMap('test').set('value', 'newly readable');
+  remote.getDocDiff = async () => {
+    reads++;
+    if (!allowed) {
+      const error = new Error('No permission to read doc');
+      error.name = 'DOC_ACTION_DENIED';
+      throw error;
+    }
+    return {
+      docId: 'old-private-doc',
+      missing: encodeStateAsUpdate(doc),
+      state: new Uint8Array(),
+      timestamp: new Date(1),
+    };
+  };
+  const peer = new DocSyncPeer('remote-grant', local, metadata, remote);
+  const abort = new AbortController();
+  local.connection.connect();
+  metadata.connection.connect();
+  await local.connection.waitForConnected();
+  await metadata.connection.waitForConnected();
+  const loop = peer.mainLoop(abort.signal).catch(() => {});
+  try {
+    peer.retryDoc('old-private-doc');
+    await vi.waitFor(() => expect(reads).toBe(1));
+    allowed = true;
+    peer.retryDoc('old-private-doc');
+    await vi.waitFor(async () =>
+      expect(await local.getDoc('old-private-doc')).not.toBeNull()
+    );
+    expect(reads).toBe(2);
+    expect(remote.pushCount).toBe(0);
+  } finally {
+    abort.abort();
+    await loop;
+    local.connection.disconnect();
+    metadata.connection.disconnect();
+  }
+});

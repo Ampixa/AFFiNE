@@ -885,6 +885,17 @@ export class DocSyncPeer {
     this.statusUpdatedSubject$.next(job.docId);
   }
 
+  /** Retry one newly readable document without resetting other documents or clocks. */
+  retryDoc(docId: string) {
+    this.status.docErrors.delete(docId);
+    this.status.docs.add(docId);
+    // A grant does not change the remote document timestamp. Pull explicitly,
+    // even when the incremental workspace timestamp cursor has passed it.
+    this.schedule({ type: 'pull', docId });
+    this.statusUpdatedSubject$.next(docId);
+    this.statusUpdatedSubject$.next(true);
+  }
+
   addPriority(id: string, priority: number) {
     const oldPriority = this.prioritySettings.get(id) ?? 0;
     this.prioritySettings.set(id, priority);
