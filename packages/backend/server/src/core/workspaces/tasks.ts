@@ -508,7 +508,7 @@ export class WorkspaceTasksService {
       throw new NotFound('Document unavailable.');
   }
 
-  async create(userId: string, workspaceId: string, input: unknown) {
+  async prepareCreate(userId: string, workspaceId: string, input: unknown) {
     await this.access(userId, workspaceId, true);
     const admin = await this.isAdmin(userId, workspaceId);
     const parsed = parse(createSchema, input);
@@ -530,6 +530,11 @@ export class WorkspaceTasksService {
       : undefined;
     for (const id of ids)
       await this.assertLink(userId, workspaceId, id, activeIds);
+    return { data, ids };
+  }
+
+  async create(userId: string, workspaceId: string, input: unknown) {
+    const { data, ids } = await this.prepareCreate(userId, workspaceId, input);
     const row = await this.db.$transaction(async tx => {
       await this.lockActor(tx, userId, workspaceId);
       await this.access(userId, workspaceId, true);
@@ -702,20 +707,44 @@ export class WorkspaceTasksService {
     });
   }
 
-  async link(
+  async prepareLink(
     userId: string,
     workspaceId: string,
     id: string,
-    docId: string,
-    remove = false
+    docId: string
   ) {
     const row = await this.task(userId, workspaceId, id, true);
     await this.assertLinkOwner(userId, workspaceId, row.assigneeId);
     parse(identifier, docId);
     await this.assertLink(userId, workspaceId, docId);
+    return this.get(userId, workspaceId, id);
+  }
+
+  async link(
+    userId: string,
+    workspaceId: string,
+    id: string,
+    docId: string,
+    remove = false,
+    expectedUpdatedAt?: number
+  ) {
+    const row = await this.task(userId, workspaceId, id, true);
+    await this.assertLinkOwner(userId, workspaceId, row.assigneeId);
+    if (
+      expectedUpdatedAt !== undefined &&
+      row.updatedAt.getTime() !== expectedUpdatedAt
+    )
+      throw taskConflict('Task changed. Review a fresh preview.');
+    parse(identifier, docId);
+    await this.assertLink(userId, workspaceId, docId);
     await this.db.$transaction(async tx => {
       await this.lockActor(tx, userId, workspaceId);
       const current = await this.task(userId, workspaceId, id, true);
+      if (
+        expectedUpdatedAt !== undefined &&
+        current.updatedAt.getTime() !== expectedUpdatedAt
+      )
+        throw taskConflict('Task changed. Review a fresh preview.');
       const admin = await this.assertLinkOwner(
         userId,
         workspaceId,
