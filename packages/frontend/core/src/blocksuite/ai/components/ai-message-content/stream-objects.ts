@@ -495,6 +495,8 @@ export class ChatContentStreamObjects extends WithDisposable(
           .data=${streamObject}
           .width=${this.width}
         ></doc-read-result>`;
+      case 'task_create':
+      case 'task_link_document':
       case 'task_update':
       case 'doc_create':
       case 'doc_update':
@@ -606,6 +608,8 @@ export class ChatContentStreamObjects extends WithDisposable(
           .peekViewService=${this.peekViewService}
           .onOpenDoc=${this.onOpenDoc}
         ></doc-read-result>`;
+      case 'task_create':
+      case 'task_link_document':
       case 'task_update':
       case 'doc_create':
       case 'doc_update':

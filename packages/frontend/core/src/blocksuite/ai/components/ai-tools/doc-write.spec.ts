@@ -28,25 +28,33 @@ vi.unstubAllGlobals();
 if (!customElements.get('test-doc-write-tool'))
   customElements.define('test-doc-write-tool', DocWriteTool);
 
-async function mount(kind: 'document' | 'task' = 'document') {
+async function mount(
+  kind: 'document' | 'task' | 'task_create' | 'task_link_document' = 'document',
+  expected: 'proposed' | 'applied' = 'proposed'
+) {
   const element = document.createElement('test-doc-write-tool') as DocWriteTool;
   element.data = {
     type: 'tool-result',
     toolCallId: 'call',
-    toolName: kind === 'task' ? 'task_update' : 'doc_update',
-    args: kind === 'task' ? {} : { doc_id: 'doc' },
+    toolName:
+      kind === 'document'
+        ? 'doc_update'
+        : kind === 'task'
+          ? 'task_update'
+          : kind,
+    args: kind !== 'document' ? {} : { doc_id: 'doc' },
     result: {
       status: 'proposed',
       proposalId: 'proposal',
       operation: 'update',
-      ...(kind === 'task' ? {} : { docId: 'doc' }),
-      title: kind === 'task' ? 'Release task' : 'Roadmap',
+      ...(kind !== 'document' ? {} : { docId: 'doc' }),
+      title: kind !== 'document' ? 'Release task' : 'Roadmap',
       before: 'Old paragraph',
       after: '<script>unsafe()</script> New paragraph',
     },
   };
   document.body.append(element);
-  await vi.waitFor(() => expect(element.decision).toBe('proposed'));
+  await vi.waitFor(() => expect(element.decision).toBe(expected));
   await element.updateComplete;
   return element;
 }
@@ -172,4 +180,85 @@ test('task Cancel never applies and an ownership conflict disables further Apply
     )?.disabled
   ).toBe(true);
   expect(service.waitForSelectedSources).not.toHaveBeenCalled();
+});
+
+for (const kind of ['task_create', 'task_link_document'] as const) {
+  test(`${kind} uses task preview decisions, cancels safely and restores saved state`, async () => {
+    const element = await mount(kind);
+    expect(element.querySelector('script')).toBeNull();
+    expect(element.textContent).toContain(
+      kind === 'task_create' ? 'New task' : 'Link document to task'
+    );
+    expect(service.client.decideDocumentEdit).toHaveBeenCalledWith(
+      'proposal',
+      'status',
+      'task'
+    );
+    const button = (name: string) =>
+      [...element.querySelectorAll('button')].find(
+        item => item.textContent?.trim() === name
+      );
+    button('Cancel')?.click();
+    await vi.waitFor(() => expect(element.decision).toBe('cancelled'));
+    expect(service.client.decideDocumentEdit).toHaveBeenCalledWith(
+      'proposal',
+      'cancel',
+      'task'
+    );
+    const next = await mount(kind);
+    [...next.querySelectorAll('button')]
+      .find(item => item.textContent?.trim() === 'Apply')
+      ?.click();
+    await vi.waitFor(() => expect(next.decision).toBe('applied'));
+    await next.updateComplete;
+    expect(service.client.decideDocumentEdit).toHaveBeenCalledWith(
+      'proposal',
+      'apply',
+      'task'
+    );
+    expect(service.waitForSelectedSources).not.toHaveBeenCalled();
+    expect(next.textContent).toContain(
+      kind === 'task_create' ? 'Task created.' : 'Document linked to task.'
+    );
+    expect(next.textContent).not.toContain('Open document');
+    service.client.decideDocumentEdit.mockResolvedValueOnce({
+      status: 'applied',
+      docId: 'doc',
+    });
+    const restored = await mount(kind, 'applied');
+    expect(
+      [...restored.querySelectorAll('button')].find(
+        item => item.textContent?.trim() === 'Apply'
+      )?.disabled
+    ).toBe(true);
+    expect(restored.textContent).toContain(
+      kind === 'task_create' ? 'Task created.' : 'Document linked to task.'
+    );
+  });
+}
+
+test('unlink previews accurately describe removal and its saved result', async () => {
+  const element = await mount('task_link_document');
+  if (element.data.type !== 'tool-result') throw new Error('Expected result');
+  element.data = {
+    ...element.data,
+    result: {
+      status: 'proposed',
+      proposalId: 'proposal',
+      operation: 'link',
+      linked: false,
+      title: 'Release task',
+      after: '{"docId":"doc","linked":false}',
+    },
+  };
+  await element.updateComplete;
+  expect(element.textContent).toContain('Remove document link');
+  expect(element.textContent).not.toContain('Link document to task');
+  [...element.querySelectorAll('button')]
+    .find(button => button.textContent?.trim() === 'Apply')
+    ?.click();
+  await vi.waitFor(() => expect(element.decision).toBe('applied'));
+  await element.updateComplete;
+  expect(element.textContent).toContain('Document unlinked from task.');
+  expect(element.textContent).not.toContain('Document linked to task.');
 });

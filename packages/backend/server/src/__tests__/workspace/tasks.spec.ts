@@ -1059,3 +1059,31 @@ test('own link atomic write rejects reassignment after transaction permission ch
   t.is(f.history.length, 1);
   t.is(f.row.version, 1);
 });
+
+test('Intelligence preflight validates create and link without writes', async t => {
+  const f = fixture();
+  f.row.assigneeId = 'editor';
+  const draft = await f.service.prepareCreate('editor', 'workspace', {
+    title: 'Preview only',
+    linkedDocIds: ['public-doc'],
+  });
+  t.is(draft.data.assigneeId, 'editor');
+  t.deepEqual(draft.ids, ['public-doc']);
+  const row = await f.service.prepareLink(
+    'editor',
+    'workspace',
+    'task',
+    'public-doc'
+  );
+  t.is(row.id, 'task');
+  t.is(f.history.length, 1);
+});
+
+test('reviewed context link rejects stale task revision even for existing link', async t => {
+  const f = fixture();
+  f.row.assigneeId = 'editor';
+  await t.throwsAsync(() =>
+    f.service.link('editor', 'workspace', 'task', 'public-doc', false, 999)
+  );
+  t.is(f.history.length, 1);
+});

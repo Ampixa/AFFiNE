@@ -27,13 +27,21 @@ boundary. Imported tasks retain their original document access boundary.
 
 With document reading enabled, chat can list/read accessible workspace tasks and
 propose progress edits to tasks assigned to the signed-in user. Even an admin
-cannot use Intelligence to edit someone else's task. Task creation, reassignment,
-priority, deadline, archive and title changes are not offered through chat.
+cannot use Intelligence to change someone else's progress fields. Chat also offers
+reviewed task creation and document linking with the same permissions as MCP:
+members create self-assigned tasks with normal priority and no deadline, and link
+or unlink readable context on their own tasks. Admins may create for others and
+manage their context links. Creation defaults to the signed-in user as owner.
+Existing-task reassignment, priority, deadline, archive and title edits remain
+unavailable through chat. Resolve exact document IDs through accessible search;
+never guess IDs or infer access from a task link.
 
 Nothing is saved by the model. Apply/Cancel previews use the current user's
 conversation, expire after 15 minutes and recheck ownership and permissions on
 apply. Version conflicts require a fresh preview. Claims and receipts prevent
-replaying an ambiguous apply. Task activity records the human actor. Existing
+replaying an ambiguous apply. Creation returns the created task ID; if an Apply
+is uncertain, inspect the task list before making a new proposal. Linked-source
+access is checked before preview and again at save time. Task activity records the human actor. Existing
 chat messages may retain previously authorized text; revocation does not erase
 old conversations.
 

@@ -5,7 +5,10 @@ import createHttpError from 'http-errors';
 import { z } from 'zod';
 
 import { Cache } from '../../../base';
-import { WorkspaceTasksService } from '../../../core/workspaces/tasks';
+import {
+  createSchema,
+  WorkspaceTasksService,
+} from '../../../core/workspaces/tasks';
 import { Models } from '../../../models';
 import type { CopilotChatOptions } from '../providers/types';
 import { type CopilotToolSet, defineTool } from '../tools/tool';
@@ -21,15 +24,30 @@ const progress = z
   })
   .strict()
   .refine(value => Object.keys(value).length > 0, 'Specify a change.');
+const linkInput = z
+  .object({ docId: z.string().min(1).max(128), linked: z.boolean() })
+  .strict();
 type Proposal = {
   userId: string;
   workspaceId: string;
   sessionId: string;
-  taskId: string;
-  expectedUpdatedAt: number;
-  patch: z.infer<typeof progress>;
   expiresAt: number;
-};
+} & (
+  | {
+      operation?: 'update';
+      taskId: string;
+      expectedUpdatedAt: number;
+      patch: z.infer<typeof progress>;
+    }
+  | { operation: 'create'; input: z.infer<typeof createSchema> }
+  | {
+      operation: 'link';
+      taskId: string;
+      expectedUpdatedAt: number;
+      docId: string;
+      linked: boolean;
+    }
+);
 
 @Injectable()
 export class TaskEditing {
@@ -90,6 +108,19 @@ export class TaskEditing {
           return this.tasks.comments(user, workspace, taskId, cursor);
         },
       }),
+      task_create: defineTool({
+        description:
+          'Propose a new task; nothing is saved until the user reviews and Applies. Members can create only self-assigned tasks with normal priority and no deadline; admins have the same permissions as MCP. Default owner is the signed-in user. Use only document IDs retrieved from accessible workspace documents; links do not grant access. Never regenerate or retry an uncertain creation without checking tasks.',
+        inputSchema: createSchema,
+        execute: input => this.proposeCreate(user, workspace, session, input),
+      }),
+      task_link_document: defineTool({
+        description:
+          'Propose linking (linked=true) or unlinking (linked=false) one readable document on your assigned task; admins may manage others, matching MCP permissions. Nothing is saved until review and Apply. Use exact retrieved task/document IDs. A link never grants document access.',
+        inputSchema: linkInput.extend({ taskId: z.string().min(1).max(128) }),
+        execute: ({ taskId, ...input }) =>
+          this.proposeLink(user, workspace, session, taskId, input),
+      }),
       task_update: defineTool({
         description:
           'Propose progress changes to a task assigned to the signed-in user. Does not save. The user must review and Apply the preview. No creation, assignment, priority, deadline, archive or title changes. Use description for text checklists.',
@@ -100,6 +131,113 @@ export class TaskEditing {
           this.propose(user, workspace, session, taskId, patch),
       }),
     };
+  }
+
+  private async savePreview(
+    proposal: Proposal,
+    title: string,
+    before: string,
+    after: string
+  ) {
+    const count = await this.cache.increaseWithTtl(
+      `copilot:task-edit:limit:${proposal.userId}`,
+      TTL
+    );
+    if (!count || count > 20)
+      throw createHttpError(
+        429,
+        'Too many previews. Review existing task previews first.'
+      );
+    const proposalId = randomUUID();
+    if (
+      !(await this.cache.set(`copilot:task-edit:${proposalId}`, proposal, {
+        ttl: TTL,
+      }))
+    )
+      throw createHttpError(503, 'Could not store preview. No task changed.');
+    return {
+      status: 'proposed',
+      proposalId,
+      title,
+      operation: proposal.operation,
+      ...(proposal.operation === 'link' ? { linked: proposal.linked } : {}),
+      before,
+      after,
+      expiresAt: proposal.expiresAt,
+      message: 'Nothing saved. Review and Apply the task preview.',
+    };
+  }
+
+  async proposeCreate(
+    userId: string,
+    workspaceId: string,
+    sessionId: string,
+    input: unknown
+  ) {
+    await this.authorize(userId, workspaceId, sessionId);
+    const parsed = createSchema.parse(input);
+    const requested = {
+      ...parsed,
+      assigneeId: parsed.assigneeId === undefined ? userId : parsed.assigneeId,
+    };
+    const { data, ids } = await this.tasks.prepareCreate(
+      userId,
+      workspaceId,
+      requested
+    );
+    const normalized = createSchema.parse({ ...data, linkedDocIds: ids });
+    return this.savePreview(
+      {
+        userId,
+        workspaceId,
+        sessionId,
+        operation: 'create',
+        input: normalized,
+        expiresAt: Date.now() + TTL,
+      },
+      data.title,
+      '',
+      JSON.stringify(normalized, null, 2)
+    );
+  }
+
+  async proposeLink(
+    userId: string,
+    workspaceId: string,
+    sessionId: string,
+    taskId: string,
+    input: unknown
+  ) {
+    await this.authorize(userId, workspaceId, sessionId);
+    const parsed = linkInput.parse(input);
+    const row = await this.tasks.prepareLink(
+      userId,
+      workspaceId,
+      taskId,
+      parsed.docId
+    );
+    return this.savePreview(
+      {
+        userId,
+        workspaceId,
+        sessionId,
+        taskId,
+        operation: 'link',
+        expectedUpdatedAt: row.updatedAt,
+        ...parsed,
+        expiresAt: Date.now() + TTL,
+      },
+      row.title,
+      JSON.stringify(
+        {
+          docId: parsed.docId,
+          linked: row.linkedDocIds.includes(parsed.docId),
+        },
+        null,
+        2
+      ),
+      JSON.stringify(parsed, null, 2)
+    );
   }
 
   async propose(
@@ -181,14 +319,25 @@ export class TaskEditing {
       proposal.expiresAt <= Date.now()
     )
       throw createHttpError(404, 'Task preview unavailable or expired.');
-    const { workspaceId, sessionId, taskId } = proposal;
+    const { workspaceId, sessionId } = proposal;
     await this.authorize(userId, workspaceId, sessionId);
-    const row = await this.tasks.get(userId, workspaceId, taskId);
-    if (!row.canEdit || row.assigneeId !== userId)
-      throw createHttpError(
-        403,
-        'This task is no longer assigned to you or editable.'
+    if (proposal.operation === 'create') {
+      await this.tasks.prepareCreate(userId, workspaceId, proposal.input);
+    } else if (proposal.operation === 'link') {
+      await this.tasks.prepareLink(
+        userId,
+        workspaceId,
+        proposal.taskId,
+        proposal.docId
       );
+    } else {
+      const row = await this.tasks.get(userId, workspaceId, proposal.taskId);
+      if (!row.canEdit || row.assigneeId !== userId)
+        throw createHttpError(
+          403,
+          'This task is no longer assigned to you or editable.'
+        );
+    }
     const receipt = await this.cache.get<{ status: 'applied' | 'cancelled' }>(
       `${key}:receipt`
     );
@@ -204,15 +353,36 @@ export class TaskEditing {
         409,
         'Preview already handled. Check the task before retrying.'
       );
-    if (decision === 'apply')
-      await this.tasks.update(
-        userId,
-        workspaceId,
-        taskId,
-        { ...proposal.patch, expectedUpdatedAt: proposal.expectedUpdatedAt },
-        true
-      );
+    let createdTaskId: string | undefined;
+    if (decision === 'apply') {
+      if (proposal.operation === 'create') {
+        const created = await this.tasks.create(
+          userId,
+          workspaceId,
+          proposal.input
+        );
+        createdTaskId = created.id;
+      } else if (proposal.operation === 'link') {
+        await this.tasks.link(
+          userId,
+          workspaceId,
+          proposal.taskId,
+          proposal.docId,
+          !proposal.linked,
+          proposal.expectedUpdatedAt
+        );
+      } else {
+        await this.tasks.update(
+          userId,
+          workspaceId,
+          proposal.taskId,
+          { ...proposal.patch, expectedUpdatedAt: proposal.expectedUpdatedAt },
+          true
+        );
+      }
+    }
     const result = {
+      ...(createdTaskId ? { taskId: createdTaskId } : {}),
       status:
         decision === 'apply' ? ('applied' as const) : ('cancelled' as const),
     };
