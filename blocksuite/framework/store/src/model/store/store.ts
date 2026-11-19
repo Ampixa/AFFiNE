@@ -1285,6 +1285,12 @@ export class Store {
           this._handleYBlockDelete(id, isLocal);
           return;
         }
+        if (value.action === 'update') {
+          // A remote writer may replace a Y.Map while retaining the block ID.
+          // Recreate the model instead of leaving it attached to the deleted map.
+          this._handleYBlockDelete(id, isLocal);
+          this._handleYBlockAdd(id, isLocal);
+        }
       } catch (e) {
         console.error('An error occurred while handling Yjs event:');
         console.error(e);
