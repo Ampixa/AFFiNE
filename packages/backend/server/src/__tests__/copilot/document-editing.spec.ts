@@ -72,9 +72,13 @@ function fixture() {
     },
     isEmptyBin: () => true,
   } as unknown as PgWorkspaceDocStorageAdapter;
-  const writer = new DocWriter(storage, {
-    emit: () => {},
-  } as unknown as EventBus);
+  const writer = new DocWriter(
+    storage,
+    {
+      emit: () => {},
+    } as unknown as EventBus,
+    {} as never
+  );
   // Creation is separately authorized; record writes without fabricating a workspace root.
   writer.createDoc = async () => {
     saves.push('create');
@@ -321,7 +325,8 @@ test('browser tool runtime never exposes immediate writes, even with development
     {} as never,
     {} as never,
     {} as never,
-    f.service
+    f.service,
+    { tools: () => ({}) } as never
   );
   const options = {
     ...f.options,
@@ -352,7 +357,8 @@ test('apply endpoint accepts only a decision, never caller-supplied document con
     {} as never,
     {} as never,
     {} as never,
-    f.service
+    f.service,
+    { tools: () => ({}) } as never
   );
   await t.throwsAsync(
     controller.decideDocumentEdit({ id: 'user' } as never, p.proposalId, '', {

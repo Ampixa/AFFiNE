@@ -1,5 +1,27 @@
 # Manual release for the Ampixa systemd installation
 
+## Dedicated task storage cutover
+
+The task-table release adds only migration `20261115160000_workspace_tasks`.
+Before applying it, verify the current migration checksums against the release,
+confirm it is the only pending migration, and create a verified pre-schema
+database backup. Apply that reviewed migration using Prisma and the protected
+service environment. The ordinary deployment script still requires an exact
+match with the already-applied schema; it does not run migrations implicitly.
+
+For this cutover, set `AFFINE_IMPORT_LEGACY_TASKS_WORKSPACE` to the explicit
+workspace ID when invoking `ci/deploy-release.sh`. The script backs up the
+database and configuration, stops the old application, imports legacy task
+metadata, and then switches applications. The importer runs with the protected
+service environment and a bounded runtime. It does not change document content
+or permissions. Reload old browser tabs after cutover.
+
+Keep the new tables during rollback. Once users edit table-backed tasks, the
+legacy task documents are no longer current; reconcile those edits before
+returning users to the older Tasks implementation. A failed cutover may also
+leave committed imports that need reconciliation before retrying. See
+[the importer procedure](../../packages/backend/server/scripts/import-legacy-tasks.md).
+
 A merge updates source code. The existing installation runs a compiled application
 from `/opt/affine/app`; pulling Git or restarting that directory does not build a
 new release. Deployment is a maintainer action after the gates below pass.

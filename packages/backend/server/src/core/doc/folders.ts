@@ -119,16 +119,23 @@ export class FolderService {
     folderId: string,
     docId: string,
     editor: string,
-    signal: AbortSignal
+    signal: AbortSignal,
+    authorize: () => Promise<void>
   ) {
     // Serialize MCP writes so a retry cannot add the same doc twice.
     await using lock = await this.mutex.acquire(`mcp:folders:${workspaceId}`);
     if (!lock) throw new FolderError('FOLDERS_BUSY: Retry shortly.');
-    return this.withDoc(
+    await authorize();
+    signal.throwIfAborted();
+    const target = await this.storage.getDoc(workspaceId, docId);
+    if (!target?.bin)
+      throw new FolderError('DOCUMENT_NOT_FOUND: Document not found.');
+    return await this.withDoc(
       workspaceId,
       signal,
       doc => addDocLink(doc, folderId, docId),
-      editor
+      editor,
+      authorize
     );
   }
 
@@ -136,7 +143,8 @@ export class FolderService {
     workspaceId: string,
     signal: AbortSignal,
     action: (doc: Y.Doc) => T,
-    editor?: string
+    editor?: string,
+    authorize?: () => Promise<void>
   ): Promise<T> {
     signal.throwIfAborted();
     const docId = foldersDocId(workspaceId);
@@ -150,6 +158,8 @@ export class FolderService {
       const result = action(doc);
       signal.throwIfAborted();
       if (editor && updates.length) {
+        await authorize?.();
+        signal.throwIfAborted();
         const delta = Y.mergeUpdates(updates);
         const timestamp = await this.storage.pushDocUpdates(
           workspaceId,

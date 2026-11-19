@@ -39,6 +39,7 @@ import {
 } from '../tools';
 import { DocumentEditing } from './document-editing';
 import { PromptRuntime } from './prompt-runtime';
+import { TaskEditing } from './task-editing';
 
 export type ProviderSpecificToolResolver = (
   toolName: CopilotChatTools,
@@ -57,7 +58,8 @@ export class ToolRuntime {
     private readonly retrieval: DocumentRetrievalService,
     private readonly artifactRetrieval: ArtifactRetrievalService,
     private readonly delegated: DelegatedEditorService,
-    private readonly documentEditing: DocumentEditing
+    private readonly documentEditing: DocumentEditing,
+    private readonly taskEditing: TaskEditing
   ) {}
 
   async getTools(
@@ -69,6 +71,8 @@ export class ToolRuntime {
     if (!options?.tools?.length) {
       return tools;
     }
+    if (options.tools.includes('docRead'))
+      Object.assign(tools, this.taskEditing.tools(options));
     const runPromptText = (
       promptName: string,
       params: Record<string, unknown>

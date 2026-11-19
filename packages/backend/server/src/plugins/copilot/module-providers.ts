@@ -39,6 +39,7 @@ import { TurnPersistence } from './runtime/hosts/turn-persistence';
 import { PromptRuntime } from './runtime/prompt-runtime';
 import { SelectedDocumentContext } from './runtime/selected-document-context';
 import { SelectedFileContext } from './runtime/selected-file-context';
+import { TaskEditing } from './runtime/task-editing';
 import { ToolRuntime } from './runtime/tool-runtime';
 import { TurnOrchestrator } from './runtime/turn-orchestrator';
 import { ChatSessionService } from './session';
@@ -85,6 +86,7 @@ export const COPILOT_RUNTIME_PROVIDERS = [
   { provide: EMBEDDING_RERANK_RUNTIME, useExisting: CapabilityRuntime },
   ToolRuntime,
   DocumentEditing,
+  TaskEditing,
   AttachmentMaterializer,
   AttachmentAdmissionHost,
   ActionStreamHost,

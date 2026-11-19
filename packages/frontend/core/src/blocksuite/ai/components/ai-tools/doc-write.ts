@@ -10,7 +10,13 @@ import { getAIRequestService } from '../../runtime/request';
 import type { DocDisplayConfig } from '../ai-chat-chips';
 import type { ToolError } from './type';
 
-type DocWriteToolName = 'doc_create' | 'doc_update' | 'doc_update_meta';
+type DocWriteToolName =
+  | 'doc_create'
+  | 'doc_update'
+  | 'doc_update_meta'
+  | 'task_update'
+  | 'task_create'
+  | 'task_link_document';
 
 type DocWriteToolArgs = {
   doc_id?: string;
@@ -35,11 +41,12 @@ interface DocWriteToolResult {
         success?: boolean;
         status?: 'proposed';
         proposalId?: string;
-        operation?: 'create' | 'update' | 'rename';
+        operation?: 'create' | 'update' | 'rename' | 'link';
         title?: string;
         before?: string;
         after?: string;
         expiresAt?: number;
+        linked?: boolean;
         docId?: string;
         message?: string;
       }
@@ -119,6 +126,20 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
     }
   }
 
+  private get isTask() {
+    return this.data.toolName.startsWith('task_');
+  }
+
+  private get taskLabel() {
+    return this.data.toolName === 'task_create'
+      ? 'New task'
+      : this.data.toolName === 'task_link_document'
+        ? this.proposal?.linked === false
+          ? 'Remove document link'
+          : 'Link document to task'
+        : 'Task change';
+  }
+
   private get proposal() {
     const result = this.data?.type === 'tool-result' ? this.data.result : null;
     return result &&
@@ -138,9 +159,11 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
     try {
       const service = getAIRequestService();
       // Flush this client's human edits before the server checks the revision.
-      if (action === 'apply' && proposal.docId)
+      if (action === 'apply' && !this.isTask && proposal.docId)
         await service.waitForSelectedSources([proposal.docId]);
-      const result = await service.client.decideDocumentEdit(id, action);
+      const result = this.isTask
+        ? await service.client.decideDocumentEdit(id, action, 'task')
+        : await service.client.decideDocumentEdit(id, action);
       if (this.proposal?.proposalId !== id) return;
       this.decision = result.status;
       this.savedDocId = result.docId;
@@ -150,7 +173,7 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
       this.actionError =
         error instanceof Error
           ? error.message
-          : 'Could not verify this action. Check the document.';
+          : 'Could not verify this action. Check the item before trying again.';
     } finally {
       this.saving = false;
     }
@@ -162,21 +185,33 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
     const disabled = this.saving || this.decision !== 'proposed';
     return html`<section
       class="document-edit-preview"
-      aria-label="Document change preview"
+      aria-label=${this.isTask ? 'Task change preview' : 'Document change preview'}
     >
       <strong
         >${
-          proposal.operation === 'create' ? 'New document' : 'Document change'
+          this.isTask
+            ? this.taskLabel
+            : proposal.operation === 'create'
+              ? 'New document'
+              : 'Document change'
         }:
         ${proposal.title}</strong
       >
       <p>
         ${
           this.decision === 'applied'
-            ? 'Saved to document.'
+            ? this.isTask
+              ? this.data.toolName === 'task_create'
+                ? 'Task created.'
+                : this.data.toolName === 'task_link_document'
+                  ? proposal.linked === false
+                    ? 'Document unlinked from task.'
+                    : 'Document linked to task.'
+                  : 'Saved to task.'
+              : 'Saved to document.'
             : this.decision === 'cancelled'
               ? 'Cancelled. Nothing was changed.'
-              : 'Review before saving. Your document permissions still apply.'
+              : 'Review before saving. Your permissions are checked again when applying.'
         }
       </p>
       ${
@@ -207,7 +242,7 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
         this.decision === 'uncertain'
           ? html`<p role="status">
               This preview is unavailable or its outcome is uncertain. Check the
-              document and request a fresh preview if needed.
+              item and request a fresh preview if needed.
             </p>`
           : nothing
       }
@@ -219,7 +254,7 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
           Cancel
         </button>
         ${
-          this.savedDocId || proposal.docId
+          !this.isTask && (this.savedDocId || proposal.docId)
             ? html`<button
                 @click=${() => this.openDoc(this.savedDocId ?? proposal.docId)}
               >
@@ -292,8 +327,12 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
           : 'Preparing edit preview';
       case 'doc_update_meta':
         return title ? `Proposing title "${title}"` : 'Preparing title preview';
+      case 'task_create':
+      case 'task_link_document':
+      case 'task_update':
+        return 'Preparing task preview';
       default:
-        return 'Updating document';
+        return 'Preparing document preview';
     }
   }
 
@@ -305,6 +344,10 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
         return title ? `Updated "${title}"` : 'Document updated';
       case 'doc_update_meta':
         return title ? `Renamed "${title}"` : 'Document title updated';
+      case 'task_create':
+      case 'task_link_document':
+      case 'task_update':
+        return 'Task preview';
       default:
         return 'Document updated';
     }
@@ -322,7 +365,7 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
   }
 
   renderToolCall() {
-    const docId = this.getDocId();
+    const docId = this.isTask ? undefined : this.getDocId();
     const title = this.getDocTitle(docId);
     return html`<tool-call-card
       .name=${this.getCallLabel(title)}
@@ -338,7 +381,11 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
 
     const result = this.data.result;
     if (!result || isToolError(result)) {
-      const name = isToolError(result) ? result.name : 'Document action failed';
+      const name = isToolError(result)
+        ? result.name
+        : this.isTask
+          ? 'Task action failed'
+          : 'Document action failed';
       return html`<tool-call-failed
         .name=${name}
         .icon=${this.getToolIcon()}
@@ -346,8 +393,10 @@ export class DocWriteTool extends WithDisposable(ShadowlessElement) {
     }
 
     if (this.proposal) return this.renderProposal();
-    const docId = this.getDocId();
-    const title = this.getDocTitle(docId) ?? 'Document';
+    const docId = this.isTask ? undefined : this.getDocId();
+    const title = this.isTask
+      ? (result.title ?? 'Task')
+      : (this.getDocTitle(docId) ?? 'Document');
     const parts: string[] = [];
     if (result.message) parts.push(result.message);
     if (docId) parts.push(`Doc ID: ${docId}`);

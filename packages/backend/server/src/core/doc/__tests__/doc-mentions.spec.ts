@@ -24,22 +24,22 @@ const read = (binary: Uint8Array) =>
   parseDocToMarkdownFromDocSnapshot(WS, DOC, binary).markdown;
 // What DocWriter.updateDoc / createDoc now do.
 function update(binary: Uint8Array, markdown: string) {
+  const protectedLinks = protectMentionLinks(markdown, WS);
   const delta = applyKeepingMentions(
     binary,
-    updateDocWithMarkdown(
-      Buffer.from(binary),
-      protectMentionLinks(markdown, WS),
-      DOC
-    ),
-    WS
+    updateDocWithMarkdown(Buffer.from(binary), protectedLinks.markdown, DOC),
+    WS,
+    protectedLinks.placeholder
   );
   return Y.mergeUpdates([binary, delta]);
 }
 function create(markdown: string) {
+  const protectedLinks = protectMentionLinks(markdown, WS);
   return applyKeepingMentions(
     null,
-    createDocWithMarkdown('Parent', protectMentionLinks(markdown, WS), DOC),
-    WS
+    createDocWithMarkdown('Parent', protectedLinks.markdown, DOC),
+    WS,
+    protectedLinks.placeholder
   );
 }
 function withChild(binary: Uint8Array, childId: string) {
@@ -127,4 +127,34 @@ test('code keeps a literal empty mention link verbatim', t => {
   t.deepEqual([...mentions(binary)], []);
   t.regex(read(binary), /\[\]\(\/workspace\/ws-1\/a\)/);
   t.false(read(binary).includes(''));
+});
+
+test('literal private-use characters survive both prose and code edits', t => {
+  const markdown =
+    'Literal \uE000 text\n\n`\uE000 [](/workspace/ws-1/a)`\n\n```\n\uE000\n[](/workspace/ws-1/b)\n```';
+  const binary = create(markdown);
+  t.deepEqual([...mentions(binary)], []);
+  t.is((read(binary).match(/\uE000/g) ?? []).length, 3);
+  const edited = update(binary, read(binary).replace('Literal', 'Edited'));
+  t.is((read(edited).match(/\uE000/g) ?? []).length, 3);
+  t.false(read(edited).includes('AFFINE_MENTION_'));
+});
+
+test('external origins and block fragments keep their hyperlink targets', t => {
+  const targets = [
+    'https://other.example/workspace/ws-1/doc',
+    '/workspace/ws-1/doc?blockIds=block',
+    '/workspace/ws-1/doc#block',
+    '/workspace/other/doc',
+  ];
+  const binary = create(targets.map(url => `[ref](${url})`).join('\n\n'));
+  t.deepEqual([...mentions(binary)], []);
+  t.deepEqual(links(binary).sort(), targets.sort());
+});
+
+test('mention aliases survive a read-update cycle', t => {
+  const binary = create('[Custom title](/workspace/ws-1/a)');
+  t.regex(read(binary), /\[Custom title\]/);
+  t.regex(read(update(binary, read(binary))), /\[Custom title\]/);
+  t.deepEqual([...mentions(binary)], ['a']);
 });

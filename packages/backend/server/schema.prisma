@@ -209,6 +209,7 @@ model Workspace {
   docGrants                  DocGrant[]
   mcpCredentials             McpCredential[]
   artifacts                  WorkspaceArtifact[]
+  tasks                      WorkspaceTask[]
 
   @@index([lastCheckEmbeddings])
   @@index([createdAt])
@@ -1456,4 +1457,72 @@ model CalendarEventInstance {
   @@unique([calendarEventId, recurrenceId])
   @@index([calendarEventId, startAtUtc])
   @@map("calendar_event_instances")
+}
+
+// Tasks are indexed workspace records; documents provide optional context only.
+model WorkspaceTask {
+  id            String   @id @default(uuid()) @db.VarChar
+  workspaceId   String   @map("workspace_id") @db.VarChar
+  title         String   @db.Text
+  description   String   @default("") @db.Text
+  status        String   @default("inbox") @db.Text
+  priority      String   @default("normal") @db.Text
+  archived      Boolean  @default(false)
+  assigneeId    String?  @map("assignee_id") @db.VarChar
+  dueDate       String?  @map("due_date") @db.VarChar(10)
+  blockedReason String   @default("") @map("blocked_reason") @db.Text
+  // Imported tasks retain their original document's read/edit boundary.
+  legacyDocId   String?  @map("legacy_doc_id") @db.VarChar
+  version       Int      @default(1)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdBy     String?  @map("created_by") @db.VarChar
+  updatedBy     String?  @map("updated_by") @db.VarChar
+
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  links     TaskDocumentLink[]
+  activity  TaskActivity[]
+  comments  TaskComment[]
+
+  @@unique([workspaceId, legacyDocId])
+  @@index([workspaceId, createdAt, id])
+  @@index([workspaceId, archived, status])
+  @@index([workspaceId, assigneeId])
+  @@map("workspace_tasks")
+}
+
+model TaskDocumentLink {
+  taskId    String        @map("task_id") @db.VarChar
+  docId     String        @map("doc_id") @db.VarChar
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  task      WorkspaceTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, docId])
+  @@index([docId, taskId])
+  @@map("task_document_links")
+}
+
+model TaskActivity {
+  id        String        @id @default(uuid()) @db.VarChar
+  taskId    String        @map("task_id") @db.VarChar
+  actorId   String?       @map("actor_id") @db.VarChar
+  body      String        @db.Text
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  task      WorkspaceTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@map("task_activity")
+}
+
+model TaskComment {
+  id String @id @default(uuid()) @db.VarChar
+  taskId String @map("task_id") @db.VarChar
+  actorId String @map("actor_id") @db.VarChar
+  body String @db.Text
+  edited Boolean @default(false)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  task WorkspaceTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  @@index([taskId, createdAt, id])
+  @@map("task_comments")
 }

@@ -256,6 +256,10 @@ test('MCP credentials remain endpoint-bound through rotate, revoke and expiry', 
       'list_kanban_boards',
       'read_kanban_board',
       'list_folders',
+      'list_task_members',
+      'list_tasks',
+      'read_task',
+      'list_task_comments',
     ]
   );
 

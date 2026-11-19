@@ -48,6 +48,8 @@ permissions:
 
 jobs:
   prepare:
+    # Ampixa ships through its systemd workflow; keep upstream releases manual here.
+    if: github.repository == 'toeverything/AFFiNE' || github.event_name == 'workflow_dispatch'
     name: Prepare
     runs-on: ubuntu-latest
     outputs:

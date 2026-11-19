@@ -12,7 +12,13 @@ import { DocMentionError } from '../../../core/doc/doc-mentions';
 import { FolderError, foldersDocId } from '../../../core/doc/folders';
 import { KanbanError } from '../../../core/doc/kanban-document';
 import { PermissionAccess } from '../../../core/permission';
+import {
+  createSchema,
+  patchSchema,
+  WorkspaceTasksService,
+} from '../../../core/workspaces/tasks';
 import { DocumentRetrievalService } from '../retrieval/document';
+import { toToolJsonSchema } from '../tools/json-schema';
 
 type McpTextContent = {
   type: 'text';
@@ -110,6 +116,7 @@ export class WorkspaceMcpProvider {
     private readonly writer: DocWriter,
     private readonly retrieval: DocumentRetrievalService,
     private readonly kanban: KanbanService,
+    private readonly tasks: WorkspaceTasksService,
     private readonly folders: FolderService
   ) {}
 
@@ -354,7 +361,29 @@ export class WorkspaceMcpProvider {
         if (!accessible) return toolError('Folders are not accessible.');
         try {
           const folders = await this.folders.list(workspaceId, signal);
-          return toolText(JSON.stringify({ folders }));
+          const workspace = this.ac.user(userId).workspace(workspaceId);
+          const ids = [...new Set(folders.flatMap(folder => folder.docIds))];
+          const readable = new Set<string>();
+          // Bound each permission query, and never return private doc identifiers.
+          for (let offset = 0; offset < ids.length; offset += 100) {
+            signal.throwIfAborted();
+            const permitted = await workspace.docs(
+              ids.slice(offset, offset + 100).map(docId => ({ docId })),
+              'Doc.Read'
+            );
+            for (const { docId } of permitted) readable.add(docId);
+          }
+          if (!(await workspace.doc(foldersDocId(workspaceId)).can('Doc.Read')))
+            return toolError('Folders are not accessible.');
+          signal.throwIfAborted();
+          return toolText(
+            JSON.stringify({
+              folders: folders.map(folder => ({
+                ...folder,
+                docIds: folder.docIds.filter(id => readable.has(id)),
+              })),
+            })
+          );
         } catch (error) {
           return folderError(error, signal);
         }
@@ -670,12 +699,23 @@ export class WorkspaceMcpProvider {
           const aborted = abortIfNeeded(signal);
           if (aborted) return aborted;
           try {
+            const authorize = async () => {
+              if (docId === workspaceId || docId.startsWith('db$'))
+                throw new FolderError(
+                  'DOCUMENT_NOT_FOUND: Document not found.'
+                );
+              await workspace
+                .doc(foldersDocId(workspaceId))
+                .assert('Doc.Update');
+              await workspace.doc(docId).assert('Doc.Read');
+            };
             const result = await this.folders.addDoc(
               workspaceId,
               folderId,
               docId,
               userId,
-              signal
+              signal,
+              authorize
             );
             return toolText(JSON.stringify({ docId, folderId, ...result }));
           } catch (error) {
@@ -718,16 +758,32 @@ export class WorkspaceMcpProvider {
           const aborted = abortIfNeeded(signal);
           if (aborted) return aborted;
           try {
+            const authorize = async () => {
+              if (
+                [parentDocId, childDocId].some(
+                  id => id === workspaceId || id.startsWith('db$')
+                )
+              )
+                throw new DocMentionError(
+                  'DOCUMENT_NOT_FOUND: Document not found.'
+                );
+              await workspace.doc(parentDocId).assert('Doc.Update');
+              await workspace.doc(childDocId).assert('Doc.Read');
+            };
             const result = await this.writer.addDocMention(
               workspaceId,
               parentDocId,
               childDocId,
-              userId
+              userId,
+              signal,
+              authorize
             );
             return toolText(
               JSON.stringify({ parentDocId, childDocId, ...result })
             );
           } catch (error) {
+            const aborted = abortIfNeeded(signal);
+            if (aborted) return aborted;
             return toolError(
               error instanceof DocMentionError ||
                 (error instanceof Error && /not found/.test(error.message))
@@ -746,6 +802,136 @@ export class WorkspaceMcpProvider {
         addDocumentToFolder,
         addChildDocument
       );
+    }
+
+    if (this.tasks) {
+      const service = this.tasks;
+      const id = z.string().min(1).max(128);
+      const add = <S extends z.ZodTypeAny>(
+        name: string,
+        description: string,
+        parser: S,
+        run: (args: z.infer<S>) => Promise<unknown>
+      ) => {
+        tools.push(
+          defineTool({
+            name,
+            title: name.replaceAll('_', ' '),
+            description,
+            parser,
+            inputSchema: toToolJsonSchema(parser),
+            execute: async args => {
+              try {
+                return toolText(JSON.stringify(await run(args)));
+              } catch {
+                return toolError(
+                  'Task operation failed. Verify access, input and current revision. Do not retry an uncertain mutation without reading the task.'
+                );
+              }
+            },
+          })
+        );
+      };
+      add(
+        'list_task_members',
+        'List active member identifiers and display names for task assignment; excludes emails.',
+        z.object({}).strict(),
+        () => service.members(userId, workspaceId)
+      );
+      add(
+        'list_tasks',
+        'List accessible workspace tasks; follow nextCursor. Does not read document contents.',
+        z
+          .object({
+            cursor: z.string().optional(),
+            limit: z.number().int().min(1).max(100).optional(),
+          })
+          .strict(),
+        args =>
+          service.list(
+            userId,
+            workspaceId,
+            args.cursor,
+            String(args.limit ?? 50)
+          )
+      );
+      add(
+        'read_task',
+        'Read task details, activity, comments and only permitted document links.',
+        z.object({ taskId: id }).strict(),
+        args => service.get(userId, workspaceId, args.taskId)
+      );
+      add(
+        'list_task_comments',
+        'Read paginated task conversation. No document previews are fetched.',
+        z.object({ taskId: id, cursor: z.string().optional() }).strict(),
+        args => service.comments(userId, workspaceId, args.taskId, args.cursor)
+      );
+      if (accessMode === McpAccessMode.READ_WRITE) {
+        add(
+          'create_task',
+          'Create a task. Members create self-assigned tasks with default priority and no deadline; admins may assign others. Do not retry an ambiguous create; inspect list first.',
+          createSchema,
+          args => service.create(userId, workspaceId, args)
+        );
+        add(
+          'update_task',
+          'Update task fields using expectedUpdatedAt from read_task. Members may update only own progress; admins may set ownership, deadlines, priority, title and archive state.',
+          patchSchema.extend({ taskId: id }),
+          ({ taskId, ...patch }) =>
+            service.update(userId, workspaceId, taskId, patch)
+        );
+        add(
+          'link_task_document',
+          'Link or unlink an accessible context document on your assigned task; admins may manage others. Document read access required. Linking never grants access.',
+          z
+            .object({
+              taskId: id,
+              docId: id,
+              remove: z.boolean().default(false),
+            })
+            .strict(),
+          args =>
+            service.link(
+              userId,
+              workspaceId,
+              args.taskId,
+              args.docId,
+              args.remove
+            )
+        );
+        add(
+          'add_task_comment',
+          'Post a plain-text comment, with optional HTTP(S) links. All task readers can comment. Do not retry an ambiguous submission without checking comments.',
+          z
+            .object({ taskId: id, body: z.string().trim().min(1).max(10000) })
+            .strict(),
+          args =>
+            service.comment(userId, workspaceId, args.taskId, {
+              body: args.body,
+            })
+        );
+        add(
+          'edit_task_comment',
+          'Edit your own comment with expectedUpdatedAt from list_task_comments; cannot edit other authors.',
+          z
+            .object({
+              taskId: id,
+              commentId: id,
+              body: z.string().trim().min(1).max(10000),
+              expectedUpdatedAt: z.number().int(),
+            })
+            .strict(),
+          args =>
+            service.comment(
+              userId,
+              workspaceId,
+              args.taskId,
+              { body: args.body, expectedUpdatedAt: args.expectedUpdatedAt },
+              args.commentId
+            )
+        );
+      }
     }
 
     return {

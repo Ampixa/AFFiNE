@@ -75,6 +75,7 @@ function fixture(
     {} as DocWriter,
     retrieval,
     {} as KanbanService,
+    {} as never,
     {} as FolderService
   );
   return { provider, calls };

@@ -255,6 +255,7 @@ class StoreConsumer {
         }),
       'docSync.waitForSynced': (docId, ctx) =>
         this.docSync.waitForSynced(docId ?? undefined, ctx.signal),
+      'docSync.retryDoc': (docId: string) => this.docSync.retryDoc(docId),
       'docSync.resetSync': () => this.docSync.resetSync(),
       'blobSync.state': () => this.blobSync.state$,
       'blobSync.blobState': blobId => this.blobSync.blobState$(blobId),

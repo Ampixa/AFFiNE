@@ -34,6 +34,8 @@ export class BlockModel<Props extends object = object> {
 
   private readonly _onDeleted: Disposable;
 
+  private _disposeChildrenObserver?: () => void;
+
   childMap = computed(() =>
     this._children.value.reduce((map, id, index) => {
       map.set(id, index);
@@ -114,27 +116,40 @@ export class BlockModel<Props extends object = object> {
   }
 
   constructor() {
-    this._onCreated = {
-      dispose: this.created.pipe(take(1)).subscribe(() => {
-        this._children.value = this.yBlock.get('sys:children').toArray();
-        this.yBlock.get('sys:children').observe(event => {
-          this._children.value = event.target.toArray();
-        });
-        this.yBlock.observe(event => {
-          if (event.keysChanged.has('sys:children')) {
-            this._children.value = this.yBlock.get('sys:children').toArray();
-          }
-        });
-      }).unsubscribe,
-    };
-    this._onDeleted = {
-      dispose: this.deleted.pipe(take(1)).subscribe(() => {
-        this._onCreated.dispose();
-      }).unsubscribe,
-    };
+    const onCreated = this.created.pipe(take(1)).subscribe(() => {
+      let children = this.yBlock.get('sys:children');
+      const syncChildren = () => {
+        this._children.value = children.toArray();
+      };
+      const observeChildren: Parameters<YBlock['observe']>[0] = event => {
+        if (!event.keysChanged.has('sys:children')) return;
+        children.unobserve(syncChildren);
+        children = this.yBlock.get('sys:children');
+        syncChildren();
+        children.observe(syncChildren);
+      };
+
+      syncChildren();
+      children.observe(syncChildren);
+      // Remote writers can replace the array itself. Rebind so subsequent
+      // insertions/removals stay visible to paragraph and list commands.
+      this.yBlock.observe(observeChildren);
+      this._disposeChildrenObserver = () => {
+        children.unobserve(syncChildren);
+        this.yBlock.unobserve(observeChildren);
+        this._disposeChildrenObserver = undefined;
+      };
+    });
+    this._onCreated = { dispose: () => onCreated.unsubscribe() };
+    const onDeleted = this.deleted.pipe(take(1)).subscribe(() => {
+      this._disposeChildrenObserver?.();
+      this._onCreated.dispose();
+    });
+    this._onDeleted = { dispose: () => onDeleted.unsubscribe() };
   }
 
   dispose() {
+    this[Symbol.dispose]();
     this.created.complete();
     this.deleted.complete();
     this.propsUpdated.complete();
@@ -152,6 +167,7 @@ export class BlockModel<Props extends object = object> {
   }
 
   [Symbol.dispose]() {
+    this._disposeChildrenObserver?.();
     this._onCreated.dispose();
     this._onDeleted.dispose();
   }

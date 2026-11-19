@@ -425,6 +425,7 @@ function providerFixture(
           },
         } as unknown as KanbanService)
       : f.service,
+    {} as never,
     {} as FolderService
   );
   return { ...f, provider, permissionCalls };

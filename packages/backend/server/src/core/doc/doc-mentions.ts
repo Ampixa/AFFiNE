@@ -5,9 +5,6 @@ import * as Y from 'yjs';
 // (blocksuite/affine/inlines/reference/src/utils.ts). The sidebar nests every doc
 // a doc mentions under it, so a mention is what makes a "doc inside a doc".
 const REFERENCE_NODE = ' ';
-// The markdown parser drops `[](url)` entirely, and read_document exports a
-// mention without alias as exactly that, so empty mention links get this text.
-const PLACEHOLDER = '';
 
 type DeltaOp = { insert: unknown; attributes?: Record<string, unknown> };
 
@@ -15,18 +12,24 @@ export class DocMentionError extends Error {}
 
 function mentionHref(workspaceId: string) {
   const ws = workspaceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // The form read_document writes (`/workspace/<ws>/<docId>`), optionally absolute.
-  return new RegExp(
-    `^(?:https?://[^/\\s]+)?/workspace/${ws}/([A-Za-z0-9_-]+)/?(?:[?#]\\S*)?$`
-  );
+  // Only the exact relative form exported by read_document is a mention.
+  // Absolute URLs and fragment links retain their original navigation target.
+  return new RegExp(`^/workspace/${ws}/([A-Za-z0-9_-]+)/?$`);
 }
 
 /** Keeps empty-text mention links alive through the native markdown parser. */
 export function protectMentionLinks(markdown: string, workspaceId: string) {
   const href = mentionHref(workspaceId);
-  return markdown.replace(/\[\]\(([^)\s]+)\)/g, (link, url: string) =>
-    href.test(url) ? `[${PLACEHOLDER}](${url})` : link
-  );
+  let placeholder: string;
+  do {
+    placeholder = `AFFINE_MENTION_${nanoid()}`;
+  } while (markdown.includes(placeholder));
+  return {
+    placeholder,
+    markdown: markdown.replace(/\[\]\(([^)\s]+)\)/g, (link, url: string) =>
+      href.test(url) ? `[${placeholder}](${url})` : link
+    ),
+  };
 }
 
 function collectTexts(value: unknown, texts: Set<Y.Text>) {
@@ -36,7 +39,11 @@ function collectTexts(value: unknown, texts: Set<Y.Text>) {
 }
 
 /** Turns mention links back into mentions and drops placeholders, in `texts` only. */
-function restoreMentions(texts: Iterable<Y.Text>, workspaceId: string) {
+function restoreMentions(
+  texts: Iterable<Y.Text>,
+  workspaceId: string,
+  placeholder: string
+) {
   const href = mentionHref(workspaceId);
   for (const text of texts) {
     const edits: { at: number; length: number; insert?: DeltaOp }[] = [];
@@ -57,15 +64,18 @@ function restoreMentions(texts: Iterable<Y.Text>, workspaceId: string) {
             insert: REFERENCE_NODE,
             attributes: {
               ...attributes,
-              // No alias: the mention keeps showing the child's live title.
-              reference: { type: 'LinkedPage', pageId },
+              reference: {
+                type: 'LinkedPage',
+                pageId,
+                ...(op.insert === placeholder ? {} : { title: op.insert }),
+              },
             },
           },
         });
       } else {
-        for (let i = op.insert.indexOf(PLACEHOLDER); i !== -1;) {
-          edits.push({ at: at + i, length: 1 });
-          i = op.insert.indexOf(PLACEHOLDER, i + 1);
+        for (let i = op.insert.indexOf(placeholder); i !== -1;) {
+          edits.push({ at: at + i, length: placeholder.length });
+          i = op.insert.indexOf(placeholder, i + placeholder.length);
         }
       }
       at += op.insert.length;
@@ -90,7 +100,8 @@ function restoreMentions(texts: Iterable<Y.Text>, workspaceId: string) {
 export function applyKeepingMentions(
   existing: Uint8Array | null,
   update: Uint8Array,
-  workspaceId: string
+  workspaceId: string,
+  placeholder: string
 ): Uint8Array {
   const doc = new Y.Doc();
   try {
@@ -101,6 +112,8 @@ export function applyKeepingMentions(
     const observer = (events: Y.YEvent<any>[]) => {
       for (const event of events) {
         if (event.target instanceof Y.Text) touched.add(event.target);
+        else if (event.target instanceof Y.Array)
+          collectTexts(event.target, touched);
         else if (event.target instanceof Y.Map)
           for (const key of event.keysChanged)
             collectTexts(event.target.get(key), touched);
@@ -109,7 +122,7 @@ export function applyKeepingMentions(
     blocks.observeDeep(observer);
     Y.applyUpdate(doc, update);
     blocks.unobserveDeep(observer);
-    doc.transact(() => restoreMentions(touched, workspaceId));
+    doc.transact(() => restoreMentions(touched, workspaceId, placeholder));
     return Y.encodeStateAsUpdate(doc, before);
   } finally {
     doc.destroy();

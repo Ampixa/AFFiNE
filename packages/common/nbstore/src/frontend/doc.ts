@@ -531,6 +531,10 @@ ${changedList}
     );
   }
 
+  async retryDoc(docId: string) {
+    await this.sync.retryDoc(docId);
+  }
+
   async resetSync() {
     await this.sync.resetSync();
   }

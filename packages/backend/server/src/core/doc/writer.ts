@@ -5,7 +5,7 @@ import createHttpError from 'http-errors';
 import { nanoid } from 'nanoid';
 import * as Y from 'yjs';
 
-import { EventBus } from '../../base';
+import { EventBus, Mutex } from '../../base';
 import {
   addDocToRootDoc,
   createDocWithMarkdown,
@@ -52,7 +52,8 @@ export class DocWriter {
 
   constructor(
     private readonly storage: PgWorkspaceDocStorageAdapter,
-    private readonly event: EventBus
+    private readonly event: EventBus,
+    private readonly mutex: Mutex
   ) {}
 
   /**
@@ -94,14 +95,12 @@ export class DocWriter {
     );
 
     // Convert markdown to y-octo binary using the provided title
+    const protectedLinks = protectMentionLinks(markdown, workspaceId);
     const binary = applyKeepingMentions(
       null,
-      createDocWithMarkdown(
-        title,
-        protectMentionLinks(markdown, workspaceId),
-        docId
-      ),
-      workspaceId
+      createDocWithMarkdown(title, protectedLinks.markdown, docId),
+      workspaceId,
+      protectedLinks.placeholder
     );
 
     // Prepare root doc update to register the new document
@@ -207,14 +206,12 @@ export class DocWriter {
           existingDoc.bin.byteOffset,
           existingDoc.bin.byteLength
         );
+    const protectedLinks = protectMentionLinks(markdown, workspaceId);
     const delta = applyKeepingMentions(
       existingBinary,
-      updateDocWithMarkdown(
-        existingBinary,
-        protectMentionLinks(markdown, workspaceId),
-        docId
-      ),
-      workspaceId
+      updateDocWithMarkdown(existingBinary, protectedLinks.markdown, docId),
+      workspaceId,
+      protectedLinks.placeholder
     );
 
     // Push only the delta changes
@@ -362,8 +359,17 @@ export class DocWriter {
     workspaceId: string,
     parentDocId: string,
     childDocId: string,
-    editorId: string
+    editorId: string,
+    signal: AbortSignal,
+    authorize: () => Promise<void>
   ): Promise<{ added: boolean; blockId?: string }> {
+    signal.throwIfAborted();
+    await using lock = await this.mutex.acquire(
+      `mcp:doc-mentions:${workspaceId}:${parentDocId}`
+    );
+    if (!lock) throw createHttpError(409, 'Document is busy. Retry shortly.');
+    await authorize();
+    signal.throwIfAborted();
     const [parent, child] = await Promise.all([
       this.storage.getDoc(workspaceId, parentDocId),
       this.storage.getDoc(workspaceId, childDocId),
@@ -373,6 +379,8 @@ export class DocWriter {
     if (!child?.bin)
       throw new NotFoundException(`Document ${childDocId} not found`);
 
+    await authorize();
+    signal.throwIfAborted();
     const doc = new Y.Doc();
     try {
       Y.applyUpdate(doc, parent.bin);

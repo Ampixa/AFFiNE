@@ -21,6 +21,7 @@ import type { Store } from '@blocksuite/affine/store';
 import {
   AiOutlineIcon,
   AllDocsIcon,
+  CheckBoxCheckLinearIcon,
   ImportIcon,
   JournalIcon,
   SettingsIcon,
@@ -84,6 +85,22 @@ const AllDocsButton = () => {
       <span data-testid="all-pages">
         {t['com.affine.workspaceSubPath.all']()}
       </span>
+    </MenuLinkItem>
+  );
+};
+
+const TasksButton = () => {
+  const workbench = useService(WorkbenchService).workbench;
+  const active = useLiveData(
+    workbench.location$.selector(location => location.pathname === '/tasks')
+  );
+  return (
+    <MenuLinkItem
+      icon={<CheckBoxCheckLinearIcon />}
+      active={active}
+      to="/tasks"
+    >
+      <span data-testid="workspace-tasks">Tasks</span>
     </MenuLinkItem>
   );
 };
@@ -212,6 +229,7 @@ export const RootAppSidebar = memo((): ReactElement => {
           <AddPageButton />
         </div>
         <AllDocsButton />
+        <TasksButton />
         <AppSidebarJournalButton />
         {sessionStatus === 'authenticated' && <NotificationButton />}
         <AIChatButton />

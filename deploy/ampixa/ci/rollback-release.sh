@@ -40,3 +40,6 @@ done
 [[ $healthy = 1 ]]
 trap - ERR INT TERM
 printf '\nPrevious complete app restored. Database, uploaded data, gateways and configuration were not restored or changed.\n'
+if [[ -f "$backup/task-import.json" ]]; then
+  echo 'Task storage cutover detected: preserve the new tables and reconcile new-table edits before returning users to legacy Tasks. This rollback does not synchronize task data back to documents.'
+fi

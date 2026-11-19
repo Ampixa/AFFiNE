@@ -171,6 +171,25 @@ export class WorkspacesController {
   }
 
   // get doc binary
+  // Task discovery reads snapshots without opening editors or recording visits.
+  // Keep this authenticated and enforce the same per-document read policy.
+  @Get('/:id/docs/:guid/task-snapshot')
+  async taskSnapshot(
+    @CurrentUser() user: CurrentUser,
+    @Param('id') workspaceId: string,
+    @Param('guid') docId: string,
+    @Res() res: Response
+  ) {
+    await this.ac.user(user.id).doc(workspaceId, docId).assert('Doc.Read');
+    // Ordinary getDoc compacts pending updates into a persisted snapshot and
+    // schedules indexing. Discovery must merge only in memory.
+    const binary = await this.workspace.getDocBinNative(workspaceId, docId);
+    if (!binary) throw new DocNotFound({ spaceId: workspaceId, docId });
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('content-type', 'application/octet-stream');
+    res.send(Buffer.from(binary));
+  }
+
   @Public()
   @Get('/:id/docs/:guid')
   @CallMetric('controllers', 'workspace_get_doc')

@@ -44,13 +44,23 @@ fi
 yarn vitest run --maxWorkers=2 \
   packages/frontend/core/src/blocksuite/ai/messages/error.spec.ts \
   packages/frontend/core/src/blocksuite/ai/components/ai-tools/doc-write.spec.ts \
-  packages/frontend/core/src/blocksuite/ai/runtime/request/copilot-client.spec.ts
+  packages/frontend/core/src/blocksuite/ai/runtime/request/copilot-client.spec.ts \
+  packages/frontend/core/src/modules/tasks/model.spec.ts \
+  packages/frontend/core/src/modules/tasks/use-tasks.security.spec.ts \
+  packages/frontend/core/src/desktop/pages/workspace/tasks/index.spec.tsx \
+  packages/frontend/core/src/modules/doc-link/__tests__/graph-model.spec.ts \
+  packages/frontend/core/src/modules/doc-link/__tests__/document-graph.spec.tsx \
+  packages/common/nbstore/src/__tests__/sync.spec.ts
 node deploy/ampixa/ci/verify-native.cjs packages/backend/server/dist/server-native.x64.node
 node --test deploy/ampixa/claude-files/gateway.test.mjs deploy/ampixa/enable-search.test.mjs
 node deploy/ampixa/claude-files/memory-smoke.mjs
+node --test packages/backend/server/scripts/import-legacy-tasks.test.mjs
 (
   cd packages/backend/server
   NODE_OPTIONS="--import=$root/tools/cli/register.js" yarn test \
+    src/__tests__/workspace/task-snapshot.spec.ts \
+    src/__tests__/workspace/tasks.spec.ts \
+    src/__tests__/copilot/task-editing.spec.ts \
     src/__tests__/copilot/local-document-search.spec.ts \
     src/__tests__/copilot/document-editing.spec.ts \
     src/__tests__/copilot/local-search-postgres.spec.ts \
@@ -59,6 +69,9 @@ node deploy/ampixa/claude-files/memory-smoke.mjs
     src/__tests__/copilot/native-errors.spec.ts \
     src/__tests__/copilot/runtime-boundaries.spec.ts \
     src/__tests__/copilot/mcp-kanban.spec.ts \
+    src/__tests__/copilot/mcp-folders.spec.ts \
+    src/core/doc/__tests__/doc-mentions.spec.ts \
+    src/core/doc/__tests__/doc-mention-writer.spec.ts \
     src/__tests__/copilot/selected-document-context.spec.ts \
     src/__tests__/copilot/selected-file-context.spec.ts
 )

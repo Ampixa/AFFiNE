@@ -28,6 +28,7 @@ export function WorkspaceGraphButton() {
   });
   const [open, setOpen] = useState(false);
   const allIds = useLiveData(docsService.list.nonTrashDocsIds$);
+  const indexState = useLiveData(docsSearchService.indexerState$);
   const ids = useMemo(() => allIds.slice(0, 200), [allIds]);
   const { docs, loading, error } = useReadableDocs(ids, open);
   const readableIds = useMemo(() => docs.map(doc => doc.id), [docs]);
@@ -76,6 +77,22 @@ export function WorkspaceGraphButton() {
       >
         <h2>Workspace graph</h2>
         {loading && <p role="status">Checking document access…</p>}
+        {!loading && indexState.indexing > 0 && (
+          <p role="status">
+            Updating document connections… {indexState.indexing} documents
+            remaining.
+          </p>
+        )}
+        {!loading && indexState.paused && (
+          <p role="status">
+            Document indexing is paused; connections may be incomplete.
+          </p>
+        )}
+        {!loading && indexState.errorMessage && (
+          <p role="alert">
+            Document indexing could not finish. Connections may be incomplete.
+          </p>
+        )}
         {(error || message) && (
           <p role="alert">
             {message || 'Could not verify document access. Close and retry.'}

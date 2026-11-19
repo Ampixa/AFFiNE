@@ -377,6 +377,7 @@ test('MCP preserves local search scope and incomplete coverage', async t => {
     {} as DocWriter,
     retrieval,
     {} as KanbanService,
+    {} as never,
     {} as FolderService
   );
   const server = await provider.for('user', 'workspace');
