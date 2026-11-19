@@ -72,9 +72,13 @@ function fixture() {
     },
     isEmptyBin: () => true,
   } as unknown as PgWorkspaceDocStorageAdapter;
-  const writer = new DocWriter(storage, {
-    emit: () => {},
-  } as unknown as EventBus);
+  const writer = new DocWriter(
+    storage,
+    {
+      emit: () => {},
+    } as unknown as EventBus,
+    {} as never
+  );
   // Creation is separately authorized; record writes without fabricating a workspace root.
   writer.createDoc = async () => {
     saves.push('create');

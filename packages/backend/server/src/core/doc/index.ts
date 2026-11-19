@@ -9,6 +9,7 @@ import { StorageModule } from '../storage';
 import { PgUserspaceDocStorageAdapter } from './adapters/userspace';
 import { PgWorkspaceDocStorageAdapter } from './adapters/workspace';
 import { DocEventsListener } from './event';
+import { FolderService } from './folders';
 import { DocStorageCronJob } from './job';
 import { KanbanService } from './kanban';
 import { DocStorageOptions } from './options';
@@ -26,12 +27,14 @@ import { DocWriter } from './writer';
     DatabaseDocReader,
     DocEventsListener,
     DocWriter,
+    FolderService,
     KanbanService,
   ],
   exports: [
     DatabaseDocReader,
     DocReader,
     DocWriter,
+    FolderService,
     KanbanService,
     PgWorkspaceDocStorageAdapter,
     PgUserspaceDocStorageAdapter,
@@ -43,6 +46,7 @@ export {
   DatabaseDocReader,
   DocReader,
   DocWriter,
+  FolderService,
   KanbanService,
   PgUserspaceDocStorageAdapter,
   PgWorkspaceDocStorageAdapter,

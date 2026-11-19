@@ -236,11 +236,13 @@ export function DocumentGraph({
         {query
           ? 'Search results across the loaded documents.'
           : mode === 'roots'
-            ? overview.label === 'Project hubs'
-              ? 'Overview of named project hubs. Select a hub and explore its linked documents.'
-              : overview.label === 'Entry documents'
-                ? 'Entry documents have no incoming links in this bounded index; links are not a folder hierarchy.'
-                : 'No entry documents were found. Showing all loaded documents.'
+            ? overview.label === 'Hubs and folders'
+              ? 'Overview of project hubs and top-level sidebar folders. Select a node and explore its connections.'
+              : overview.label === 'Project hubs'
+                ? 'Overview of named project hubs. Select a hub and explore its linked documents.'
+                : overview.label === 'Entry documents'
+                  ? 'Entry documents have no incoming links in this bounded index; links are not a folder hierarchy.'
+                  : 'No entry documents were found. Showing all loaded documents.'
             : mode === 'local'
               ? `Connections around ${nodes.find(node => node.id === localCenter)?.title ?? 'the chosen document'}. Select a node to inspect it, or explore to recenter.`
               : 'Hover or focus a node for its label. Select a document to explore a smaller neighborhood.'}
@@ -576,7 +578,7 @@ export function DocumentGraph({
               <button className="dg-open" onClick={() => explore(current.id)}>
                 Explore connections <span>→</span>
               </button>
-              {onOpen && (
+              {onOpen && current.kind !== 'folder' && (
                 <button className="dg-open" onClick={() => onOpen(current.id)}>
                   Open document <span>↗</span>
                 </button>

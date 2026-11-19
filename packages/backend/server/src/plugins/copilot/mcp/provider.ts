@@ -1,8 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { McpAccessMode } from '@prisma/client';
 import z from 'zod/v3';
 
-import { DocReader, DocWriter, KanbanService } from '../../../core/doc';
+import {
+  DocReader,
+  DocWriter,
+  FolderService,
+  KanbanService,
+} from '../../../core/doc';
+import { DocMentionError } from '../../../core/doc/doc-mentions';
+import { FolderError, foldersDocId } from '../../../core/doc/folders';
 import { KanbanError } from '../../../core/doc/kanban-document';
 import { PermissionAccess } from '../../../core/permission';
 import {
@@ -109,7 +116,8 @@ export class WorkspaceMcpProvider {
     private readonly writer: DocWriter,
     private readonly retrieval: DocumentRetrievalService,
     private readonly kanban: KanbanService,
-    private readonly tasks: WorkspaceTasksService
+    private readonly tasks: WorkspaceTasksService,
+    private readonly folders: FolderService
   ) {}
 
   async for(
@@ -325,14 +333,77 @@ export class WorkspaceMcpProvider {
         ),
     });
 
-    const tools = [readDocument, docSearch, listKanbanBoards, readKanbanBoard];
+    const folderError = (error: unknown, signal: AbortSignal) =>
+      toolError(
+        signal.aborted
+          ? 'Request aborted. Check list_folders before retrying.'
+          : error instanceof FolderError
+            ? error.message
+            : 'FOLDERS_UNAVAILABLE: Folders could not be read or saved. Retry later.'
+      );
+    const listFolderTool = defineTool({
+      name: 'list_folders',
+      title: 'List Folders',
+      description:
+        'List the workspace sidebar folders (Organize section) with their id, name, parentId and the ids of docs filed in each. Use a folder id with add_document_to_folder.',
+      parser: z.object({}).strict(),
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+      execute: async (_args, { signal }) => {
+        const accessible = await this.ac
+          .user(userId)
+          .workspace(workspaceId)
+          .doc(foldersDocId(workspaceId))
+          .can('Doc.Read');
+        if (!accessible) return toolError('Folders are not accessible.');
+        try {
+          const folders = await this.folders.list(workspaceId, signal);
+          const workspace = this.ac.user(userId).workspace(workspaceId);
+          const ids = [...new Set(folders.flatMap(folder => folder.docIds))];
+          const readable = new Set<string>();
+          // Bound each permission query, and never return private doc identifiers.
+          for (let offset = 0; offset < ids.length; offset += 100) {
+            signal.throwIfAborted();
+            const permitted = await workspace.docs(
+              ids.slice(offset, offset + 100).map(docId => ({ docId })),
+              'Doc.Read'
+            );
+            for (const { docId } of permitted) readable.add(docId);
+          }
+          if (!(await workspace.doc(foldersDocId(workspaceId)).can('Doc.Read')))
+            return toolError('Folders are not accessible.');
+          signal.throwIfAborted();
+          return toolText(
+            JSON.stringify({
+              folders: folders.map(folder => ({
+                ...folder,
+                docIds: folder.docIds.filter(id => readable.has(id)),
+              })),
+            })
+          );
+        } catch (error) {
+          return folderError(error, signal);
+        }
+      },
+    });
+
+    const tools = [
+      readDocument,
+      docSearch,
+      listKanbanBoards,
+      readKanbanBoard,
+      listFolderTool,
+    ];
 
     if (accessMode === McpAccessMode.READ_WRITE && env.mcpWriteEnabled) {
       const createDocument = defineTool({
         name: 'create_document',
         title: 'Create Document',
         description:
-          'Create a new document in the workspace with the given title and markdown content. Returns the ID of the created document. Supports Markdown pipe tables with a header and separator row; these become editable simple tables, not database views. Does not insert databases or images. For tasks on an existing Kanban board, use create_kanban_task.',
+          'Create a new document in the workspace with the given title and markdown content. Returns the ID of the created document. Supports Markdown pipe tables with a header and separator row; these become editable simple tables, not database views. Does not insert databases or images. For tasks on an existing Kanban board, use create_kanban_task. Links written as [text](/workspace/<workspaceId>/<docId>) become @ mentions of that doc, which nests it under this doc in the sidebar; keep the ones read_document returns to keep sub-docs.',
         parser: z.object({
           title: z.string().min(1),
           content: z.string(),
@@ -394,7 +465,7 @@ export class WorkspaceMcpProvider {
         name: 'update_document',
         title: 'Update Document',
         description:
-          'Update an existing document with new markdown content (body only). Uses structural diffing to apply minimal changes, preserving document history and enabling real-time collaboration. Supports editable simple tables written as Markdown pipe tables with a header and separator row. This does NOT update the document title, databases, or images. Use create_kanban_task or move_kanban_task for Kanban cards.',
+          'Update an existing document with new markdown content (body only). Uses structural diffing to apply minimal changes, preserving document history and enabling real-time collaboration. Supports editable simple tables written as Markdown pipe tables with a header and separator row. This does NOT update the document title, databases, or images. Use create_kanban_task or move_kanban_task for Kanban cards. Links written as [text](/workspace/<workspaceId>/<docId>) become @ mentions of that doc, which nests it under this doc in the sidebar; keep the ones read_document returns to keep sub-docs.',
         parser: z.object({
           docId: z.string(),
           content: z.string(),
@@ -596,12 +667,148 @@ export class WorkspaceMcpProvider {
             )
           ),
       });
+      const addDocumentToFolder = defineTool({
+        name: 'add_document_to_folder',
+        title: 'Add Document To Folder',
+        description:
+          'File an existing document into a sidebar folder (appended last). Use folderId from list_folders. Adding a doc already in that folder is a no-op. Does not remove it from other folders.',
+        parser: z
+          .object({
+            docId: z.string().min(1).max(128),
+            folderId: z.string().min(1).max(128),
+          })
+          .strict(),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            docId: { type: 'string', minLength: 1, maxLength: 128 },
+            folderId: { type: 'string', minLength: 1, maxLength: 128 },
+          },
+          required: ['docId', 'folderId'],
+          additionalProperties: false,
+        },
+        execute: async ({ docId, folderId }, { signal }) => {
+          const workspace = this.ac.user(userId).workspace(workspaceId);
+          // Same check the sync gateway applies to browser edits of the folders doc.
+          const [canFile, canSeeDoc] = await Promise.all([
+            workspace.doc(foldersDocId(workspaceId)).can('Doc.Update'),
+            workspace.doc(docId).can('Doc.Read'),
+          ]);
+          if (!canSeeDoc) return toolError(`Doc with id ${docId} not found.`);
+          if (!canFile) return toolError('Folders are not editable.');
+          const aborted = abortIfNeeded(signal);
+          if (aborted) return aborted;
+          try {
+            const authorize = async () => {
+              if (!env.mcpWriteEnabled)
+                throw new FolderError(
+                  'WRITE_DISABLED: Document writes are disabled.'
+                );
+              if (docId === workspaceId || docId.startsWith('db$'))
+                throw new FolderError(
+                  'DOCUMENT_NOT_FOUND: Document not found.'
+                );
+              await workspace
+                .doc(foldersDocId(workspaceId))
+                .assert('Doc.Update');
+              await workspace.doc(docId).assert('Doc.Read');
+            };
+            const result = await this.folders.addDoc(
+              workspaceId,
+              folderId,
+              docId,
+              userId,
+              signal,
+              authorize
+            );
+            return toolText(JSON.stringify({ docId, folderId, ...result }));
+          } catch (error) {
+            return folderError(error, signal);
+          }
+        },
+      });
+      const addChildDocument = defineTool({
+        name: 'add_child_document',
+        title: 'Add Child Document',
+        description:
+          'Nest an existing document under another one in the sidebar by appending an @ mention of the child at the end of the parent body. Adding a child the parent already mentions is a no-op.',
+        parser: z
+          .object({
+            parentDocId: z.string().min(1).max(128),
+            childDocId: z.string().min(1).max(128),
+          })
+          .strict()
+          .refine(args => args.parentDocId !== args.childDocId, {
+            message: 'A document cannot be its own child',
+          }),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            parentDocId: { type: 'string', minLength: 1, maxLength: 128 },
+            childDocId: { type: 'string', minLength: 1, maxLength: 128 },
+          },
+          required: ['parentDocId', 'childDocId'],
+          additionalProperties: false,
+        },
+        execute: async ({ parentDocId, childDocId }, { signal }) => {
+          const workspace = this.ac.user(userId).workspace(workspaceId);
+          const [canEdit, canSee] = await Promise.all([
+            workspace.doc(parentDocId).can('Doc.Update'),
+            workspace.doc(childDocId).can('Doc.Read'),
+          ]);
+          if (!canEdit)
+            return toolError(`Doc with id ${parentDocId} not found.`);
+          if (!canSee) return toolError(`Doc with id ${childDocId} not found.`);
+          const aborted = abortIfNeeded(signal);
+          if (aborted) return aborted;
+          try {
+            const authorize = async () => {
+              if (!env.mcpWriteEnabled)
+                throw new DocMentionError(
+                  'WRITE_DISABLED: Document writes are disabled.'
+                );
+              if (
+                [parentDocId, childDocId].some(
+                  id => id === workspaceId || id.startsWith('db$')
+                )
+              )
+                throw new DocMentionError(
+                  'DOCUMENT_NOT_FOUND: Document not found.'
+                );
+              await workspace.doc(parentDocId).assert('Doc.Update');
+              await workspace.doc(childDocId).assert('Doc.Read');
+            };
+            const result = await this.writer.addDocMention(
+              workspaceId,
+              parentDocId,
+              childDocId,
+              userId,
+              signal,
+              authorize
+            );
+            return toolText(
+              JSON.stringify({ parentDocId, childDocId, ...result })
+            );
+          } catch (error) {
+            const aborted = abortIfNeeded(signal);
+            if (aborted) return aborted;
+            return toolError(
+              error instanceof DocMentionError ||
+                error instanceof NotFoundException
+                ? error.message
+                : 'DOCUMENT_UNAVAILABLE: The parent document could not be updated. Retry later.'
+            );
+          }
+        },
+      });
       tools.push(
         createDocument,
         updateDocument,
         updateDocumentMeta,
         createKanbanTask,
-        moveKanbanTask
+        moveKanbanTask,
+        addDocumentToFolder,
+        addChildDocument
       );
     }
 

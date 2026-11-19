@@ -48,6 +48,8 @@ yarn vitest run --maxWorkers=2 \
   packages/frontend/core/src/modules/tasks/model.spec.ts \
   packages/frontend/core/src/modules/tasks/use-tasks.security.spec.ts \
   packages/frontend/core/src/desktop/pages/workspace/tasks/index.spec.tsx \
+  packages/frontend/core/src/modules/doc-link/__tests__/graph-model.spec.ts \
+  packages/frontend/core/src/modules/doc-link/__tests__/document-graph.spec.tsx \
   packages/common/nbstore/src/__tests__/sync.spec.ts
 node deploy/ampixa/ci/verify-native.cjs packages/backend/server/dist/server-native.x64.node
 node --test deploy/ampixa/claude-files/gateway.test.mjs deploy/ampixa/enable-search.test.mjs
@@ -67,6 +69,9 @@ node --test packages/backend/server/scripts/import-legacy-tasks.test.mjs
     src/__tests__/copilot/native-errors.spec.ts \
     src/__tests__/copilot/runtime-boundaries.spec.ts \
     src/__tests__/copilot/mcp-kanban.spec.ts \
+    src/__tests__/copilot/mcp-folders.spec.ts \
+    src/core/doc/__tests__/doc-mentions.spec.ts \
+    src/core/doc/__tests__/doc-mention-writer.spec.ts \
     src/__tests__/copilot/selected-document-context.spec.ts \
     src/__tests__/copilot/selected-file-context.spec.ts
 )

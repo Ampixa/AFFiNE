@@ -5,6 +5,7 @@ export type GraphDoc = {
   status?: string;
   updated?: string;
   summary?: string;
+  kind?: 'folder';
 };
 export type GraphEdge = { source: string; target: string };
 export function normalizeGraph(
@@ -49,16 +50,52 @@ export function neighborhood(id: string, edges: GraphEdge[]) {
   ]);
 }
 
+/** Sidebar folder rows (WorkspaceDB `folders` table) as graph nodes and edges. */
+export function folderGraph(
+  rows: { id: string; parentId?: string | null; type: string; data: string }[]
+) {
+  const node = (id: string) => `folder:${id}`; // keep folder ids apart from doc ids
+  const docs: GraphDoc[] = rows
+    .filter(row => row.type === 'folder')
+    .map(row => ({
+      id: node(row.id),
+      title: row.data || 'Untitled folder',
+      group: 'Folders',
+      kind: 'folder',
+    }));
+  // Links to missing folders or unreadable docs are dropped by normalizeGraph.
+  const edges: GraphEdge[] = rows.flatMap(row =>
+    row.parentId && (row.type === 'folder' || row.type === 'doc')
+      ? [
+          {
+            source: node(row.parentId),
+            target: row.type === 'folder' ? node(row.id) : row.data,
+          },
+        ]
+      : []
+  );
+  return { docs, edges };
+}
+
 /** Hubs are explicit navigation documents, not inferred write/access parents.
  * Workspaces without named hubs use documents with no incoming indexed links.
  * A cycle-only graph falls back to all nodes so the default never hides everything.
  */
 export function graphOverview(nodes: GraphDoc[], links: GraphEdge[]) {
-  const hubs = nodes.filter(node =>
-    /(?:^|[—–-]\s+).*\bhub$/i.test(node.title.trim())
+  const hubs = nodes.filter(
+    node =>
+      node.kind !== 'folder' &&
+      /(?:^|[—–-]\s+).*\bhub$/i.test(node.title.trim())
+  );
+  const nested = new Set(links.map(edge => edge.target));
+  const folders = nodes.filter(
+    node => node.kind === 'folder' && !nested.has(node.id)
   );
   if (hubs.length)
-    return { ids: new Set(hubs.map(n => n.id)), label: 'Project hubs' };
+    return {
+      ids: new Set([...hubs, ...folders].map(n => n.id)),
+      label: folders.length ? 'Hubs and folders' : 'Project hubs',
+    };
   const incoming = new Set(links.map(edge => edge.target));
   const roots = nodes.filter(node => !incoming.has(node.id));
   return {

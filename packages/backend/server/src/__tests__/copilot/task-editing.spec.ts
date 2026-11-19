@@ -361,7 +361,8 @@ test('read-only MCP has task discovery but no mutations and binds actor to authe
     {} as never,
     {} as never,
     {} as never,
-    tasks as never
+    tasks as never,
+    {} as never
   );
   const server = await provider.for(
     'authenticated-member',
@@ -420,7 +421,8 @@ test('MCP pre-aborted task request never executes the service', async t => {
       list: async () => {
         called = true;
       },
-    } as never
+    } as never,
+    {} as never
   );
   const server = await provider.for(
     'user',
