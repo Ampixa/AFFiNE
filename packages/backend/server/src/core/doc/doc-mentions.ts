@@ -114,7 +114,7 @@ export function applyKeepingMentions(
         if (event.target instanceof Y.Text) touched.add(event.target);
         else if (event.target instanceof Y.Array)
           collectTexts(event.target, touched);
-        else if (event.target instanceof Y.Map)
+        else if (event instanceof Y.YMapEvent)
           for (const key of event.keysChanged)
             collectTexts(event.target.get(key), touched);
       }
