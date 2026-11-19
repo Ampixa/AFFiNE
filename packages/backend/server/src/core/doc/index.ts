@@ -34,6 +34,7 @@ import { DocWriter } from './writer';
     DatabaseDocReader,
     DocReader,
     DocWriter,
+    FolderService,
     KanbanService,
     PgWorkspaceDocStorageAdapter,
     PgUserspaceDocStorageAdapter,

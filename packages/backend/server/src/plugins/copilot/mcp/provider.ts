@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { McpAccessMode } from '@prisma/client';
 import z from 'zod/v3';
 
@@ -700,6 +700,10 @@ export class WorkspaceMcpProvider {
           if (aborted) return aborted;
           try {
             const authorize = async () => {
+              if (!env.mcpWriteEnabled)
+                throw new FolderError(
+                  'WRITE_DISABLED: Document writes are disabled.'
+                );
               if (docId === workspaceId || docId.startsWith('db$'))
                 throw new FolderError(
                   'DOCUMENT_NOT_FOUND: Document not found.'
@@ -759,6 +763,10 @@ export class WorkspaceMcpProvider {
           if (aborted) return aborted;
           try {
             const authorize = async () => {
+              if (!env.mcpWriteEnabled)
+                throw new DocMentionError(
+                  'WRITE_DISABLED: Document writes are disabled.'
+                );
               if (
                 [parentDocId, childDocId].some(
                   id => id === workspaceId || id.startsWith('db$')
@@ -786,7 +794,7 @@ export class WorkspaceMcpProvider {
             if (aborted) return aborted;
             return toolError(
               error instanceof DocMentionError ||
-                (error instanceof Error && /not found/.test(error.message))
+                error instanceof NotFoundException
                 ? error.message
                 : 'DOCUMENT_UNAVAILABLE: The parent document could not be updated. Retry later.'
             );

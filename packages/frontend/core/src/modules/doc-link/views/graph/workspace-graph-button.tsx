@@ -101,7 +101,7 @@ export function WorkspaceGraphButton() {
         <DocumentGraph
           docs={error ? [] : [...folders.docs, ...docs]}
           edges={[...folders.edges, ...edges]}
-          caption="Sidebar folders and local indexed links · first 200 documents, up to 2,000 reference blocks · missing connections may still be indexing or outside this view"
+          caption="Sidebar folders and local indexed links · up to 200 nodes and 2,000 reference blocks · missing connections may still be indexing or outside this view"
           onOpen={id => {
             void guardService
               .can('Doc_Read', id)

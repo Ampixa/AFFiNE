@@ -4,12 +4,12 @@ import * as Y from 'yjs';
 
 import type { EventBus, Mutex } from '../../base';
 import type { PgWorkspaceDocStorageAdapter } from '../../core/doc/adapters/workspace';
-import { WorkspaceMcpProvider } from '../../plugins/copilot/mcp/provider';
 import {
   FolderService,
   indexAfter,
   readFolderRows,
 } from '../../core/doc/folders';
+import { WorkspaceMcpProvider } from '../../plugins/copilot/mcp/provider';
 
 // Rows written the way the frontend ORM does: one top-level Y.Map per row id.
 function foldersDoc() {
@@ -336,9 +336,10 @@ test.serial(
   'MCP folder and child tools enforce credential mode, permission and cancellation',
   async t => {
     const descriptor = Object.getOwnPropertyDescriptor(env, 'mcpWriteEnabled');
+    let enabled = true;
     Object.defineProperty(env, 'mcpWriteEnabled', {
       configurable: true,
-      get: () => true,
+      get: () => enabled,
     });
     t.teardown(() => {
       if (descriptor) Object.defineProperty(env, 'mcpWriteEnabled', descriptor);
@@ -388,6 +389,25 @@ test.serial(
       tool => tool.name === 'add_document_to_folder'
     )!;
     state.allowFolders = false;
+    t.true(
+      (
+        await folder.execute(
+          { docId: 'visible', folderId: 'folder' },
+          { signal }
+        )
+      ).isError
+    );
+    state.allowWrite = true;
+    state.allowFolders = true;
+    enabled = false;
+    t.true(
+      (
+        await child.execute(
+          { parentDocId: 'parent', childDocId: 'visible' },
+          { signal }
+        )
+      ).isError
+    );
     t.true(
       (
         await folder.execute(

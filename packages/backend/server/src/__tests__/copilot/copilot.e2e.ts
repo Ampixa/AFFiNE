@@ -6,11 +6,18 @@ import { createCopilotMessageMutation } from '@affine/graphql';
 import { McpAccessMode, PrismaClient } from '@prisma/client';
 import type { TestFn } from 'ava';
 import ava from 'ava';
+import * as Y from 'yjs';
 
 import { Config } from '../../base';
 import { ServerFeature, ServerService } from '../../core';
 import { AuthService } from '../../core/auth';
-import { Models } from '../../models';
+import {
+  DocReader,
+  DocWriter,
+  PgWorkspaceDocStorageAdapter,
+} from '../../core/doc';
+import { DocRole } from '../../core/permission/types';
+import { Models, WorkspaceMemberStatus, WorkspaceRole } from '../../models';
 import { CopilotFeatureService } from '../../plugins/copilot/feature';
 import { McpCredentialService } from '../../plugins/copilot/mcp/credential';
 import { WorkspaceMcpProvider } from '../../plugins/copilot/mcp/provider';
@@ -292,4 +299,119 @@ test('MCP credentials remain endpoint-bound through rotate, revoke and expiry', 
     data: { expiresAt: new Date(0) },
   });
   await t.throwsAsync(credentials.authenticate(disabled.token, target.id));
+});
+
+test('folder and child MCP tools resolve at boot and enforce real member doc access', async t => {
+  const { app } = t.context;
+  const descriptor = Object.getOwnPropertyDescriptor(env, 'mcpWriteEnabled');
+  Object.defineProperty(env, 'mcpWriteEnabled', {
+    configurable: true,
+    get: () => true,
+  });
+  t.teardown(() => {
+    if (descriptor) Object.defineProperty(env, 'mcpWriteEnabled', descriptor);
+    else Reflect.deleteProperty(env, 'mcpWriteEnabled');
+  });
+  const owner = await app.signupV1();
+  const ws = await createWorkspace(app);
+  const models = app.get(Models);
+  const writer = app.get(DocWriter);
+  const reader = app.get(DocReader);
+  const storage = app.get(PgWorkspaceDocStorageAdapter);
+  const member = await models.user.create({
+    email: `folder-${randomUUID()}@example.test`,
+  });
+  await models.workspaceUser.set(ws.id, member.id, WorkspaceRole.Collaborator, {
+    status: WorkspaceMemberStatus.Accepted,
+  });
+  const parent = await writer.createDoc(
+    ws.id,
+    'Parent',
+    'Preserve this body',
+    owner.id
+  );
+  const child = await writer.createDoc(ws.id, 'Child', 'Child body', owner.id);
+  const privateDoc = await writer.createDoc(
+    ws.id,
+    'Secret',
+    'Private body',
+    owner.id
+  );
+  await models.doc.setDefaultRole(ws.id, parent.docId, DocRole.Editor);
+  await models.doc.setDefaultRole(ws.id, child.docId, DocRole.Reader);
+  await models.doc.setDefaultRole(ws.id, privateDoc.docId, DocRole.None);
+  const folders = new Y.Doc();
+  for (const [id, data] of Object.entries({
+    folder: { type: 'folder', data: 'Funding', parentId: null, index: 'a0' },
+    hidden: {
+      type: 'doc',
+      data: privateDoc.docId,
+      parentId: 'folder',
+      index: 'a0',
+    },
+  })) {
+    const row = folders.getMap(id);
+    for (const [key, value] of Object.entries(data)) row.set(key, value);
+  }
+  await storage.pushDocUpdates(
+    ws.id,
+    `db$${ws.id}$folders`,
+    [Y.encodeStateAsUpdate(folders)],
+    owner.id
+  );
+  folders.destroy();
+  const server = await app
+    .get(WorkspaceMcpProvider)
+    .for(member.id, ws.id, McpAccessMode.READ_WRITE);
+  const call = (name: string, args: Record<string, unknown>) =>
+    server.tools
+      .find(tool => tool.name === name)!
+      .execute(args, { signal: new AbortController().signal });
+  const listed = await call('list_folders', {});
+  t.falsy(listed.isError);
+  t.deepEqual(JSON.parse(listed.content[0].text).folders[0].docIds, []);
+  t.false(JSON.stringify(listed).includes(privateDoc.docId));
+  t.true(
+    (
+      await call('add_child_document', {
+        parentDocId: parent.docId,
+        childDocId: privateDoc.docId,
+      })
+    ).isError
+  );
+  t.falsy(
+    (
+      await call('add_document_to_folder', {
+        folderId: 'folder',
+        docId: child.docId,
+      })
+    ).isError
+  );
+  const nested = await call('add_child_document', {
+    parentDocId: parent.docId,
+    childDocId: child.docId,
+  });
+  t.falsy(nested.isError);
+  t.true(JSON.parse(nested.content[0].text).added);
+  const again = await call('add_child_document', {
+    parentDocId: parent.docId,
+    childDocId: child.docId,
+  });
+  t.false(JSON.parse(again.content[0].text).added);
+  const body = await reader.getDocMarkdown(ws.id, parent.docId, true);
+  t.true(body!.markdown.includes('Preserve this body'));
+  t.true(body!.markdown.includes(child.docId));
+  await models.doc.setDefaultRole(ws.id, parent.docId, DocRole.Reader);
+  t.true(
+    (
+      await call('add_child_document', {
+        parentDocId: parent.docId,
+        childDocId: child.docId,
+      })
+    ).isError
+  );
+  t.is(
+    (await reader.getDocMarkdown(ws.id, parent.docId, true))!.markdown,
+    body!.markdown
+  );
 });
