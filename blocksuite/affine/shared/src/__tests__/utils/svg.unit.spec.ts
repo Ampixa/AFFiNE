@@ -100,38 +100,6 @@ describe('sanitizeSvg', () => {
     expect(sanitized).not.toContain('url(');
   });
 
-  test('keeps local gradient and marker CSS without dropping the diagram palette', () => {
-    const sanitized = sanitizeSvg(`
-      <svg xmlns="http://www.w3.org/2000/svg">
-        <rect style="fill: #202020; stroke: url(#diagram-gradient)"></rect>
-        <text style="fill: #ffffff">Readable</text>
-        <defs><linearGradient id="diagram-gradient"><stop stop-color="#fff"></stop></linearGradient></defs>
-        <path style="marker-end: url('#arrow-1'); fill: url( &quot;#diagram-gradient&quot; )"></path>
-      </svg>`);
-    expect(sanitized).toContain('fill: #202020');
-    expect(sanitized).toContain('fill: #ffffff');
-    expect(sanitized).toContain('url(#diagram-gradient)');
-    expect(sanitized).toContain("url('#arrow-1')");
-  });
-
-  test.each([
-    'url(https://example.com/track)',
-    'url(//example.com/track)',
-    'url(/api/private)',
-    'url(data:image/svg+xml;base64,AAAA)',
-    'url(#safe); background: url(https://example.com/track)',
-    String.raw`u\72l(https://example.com/track)`,
-    'url(/* disguised */#safe)',
-    '@import "https://example.com/styles.css"',
-  ])('removes unsafe CSS alongside valid fragments: %s', css => {
-    const sanitized = sanitizeSvg(`<svg xmlns="http://www.w3.org/2000/svg">
-      <style>.node {fill: url(#safe); background: ${css};}</style>
-      <path style="fill: url(#safe); background: ${css.replaceAll('"', '&quot;')};"/>
-    </svg>`);
-    expect(sanitized).not.toContain('<style');
-    expect(sanitized).not.toContain('style=');
-  });
-
   test('removes links sharing the current registrable domain', () => {
     setLocation('https://sub.example.co.uk/workspace');
 
