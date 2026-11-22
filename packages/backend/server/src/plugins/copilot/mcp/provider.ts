@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { McpAccessMode } from '@prisma/client';
 import z from 'zod/v3';
 
@@ -13,6 +13,13 @@ import {
 } from '../../../core/workspaces/tasks';
 import { DocumentRetrievalService } from '../retrieval/document';
 import { toToolJsonSchema } from '../tools/json-schema';
+import { McpAttachmentService } from './attachment';
+import {
+  ATTACHMENT_MIMES,
+  attachmentInputSchema,
+  attachmentSizeLimit,
+  AttachmentUploadError,
+} from './attachment-input';
 
 type McpTextContent = {
   type: 'text';
@@ -104,6 +111,9 @@ function defineTool<T extends z.ZodTypeAny>(
 
 @Injectable()
 export class WorkspaceMcpProvider {
+  @Inject(McpAttachmentService)
+  private readonly attachments!: McpAttachmentService;
+
   constructor(
     private readonly ac: PermissionAccess,
     private readonly reader: DocReader,
@@ -116,7 +126,8 @@ export class WorkspaceMcpProvider {
   async for(
     userId: string,
     workspaceId: string,
-    accessMode: McpAccessMode = McpAccessMode.READ_ONLY
+    accessMode: McpAccessMode = McpAccessMode.READ_ONLY,
+    credentialId?: string
   ): Promise<WorkspaceMcpServer> {
     await this.ac.user(userId).workspace(workspaceId).assert('Workspace.Read');
 
@@ -329,6 +340,40 @@ export class WorkspaceMcpProvider {
     const tools = [readDocument, docSearch, listKanbanBoards, readKanbanBoard];
 
     if (accessMode === McpAccessMode.READ_WRITE && env.mcpWriteEnabled) {
+      if (credentialId) {
+        const limit = attachmentSizeLimit();
+        const parser = attachmentInputSchema(limit);
+        tools.push(
+          defineTool({
+            name: 'upload_attachment',
+            title: 'Upload Attachment',
+            description: `Upload a file as a native attachment block in an editable document. Allowed MIME types: ${ATTACHMENT_MIMES.join(', ')}. Maximum ${limit} decoded bytes (default 10 MiB; server ceiling 25 MiB), plus workspace quotas and 20 attempts/hour/credential. Send canonical contentBase64 with matching file extension. Reuse requestId and identical arguments on retries. afterBlockId is optional; otherwise append to the last page note. Downloads require workspace membership AND source document read access, even if the document is published. No URL or local-path fetching.`,
+            parser,
+            inputSchema: toToolJsonSchema(parser),
+            execute: async (args, { signal }) => {
+              try {
+                return toolText(
+                  JSON.stringify(
+                    await this.attachments.upload(
+                      userId,
+                      workspaceId,
+                      credentialId,
+                      args,
+                      signal
+                    )
+                  )
+                );
+              } catch (error) {
+                return toolError(
+                  error instanceof AttachmentUploadError
+                    ? error.message
+                    : 'UPLOAD_UNAVAILABLE: Upload could not be confirmed. Check the document and retry with the same requestId.'
+                );
+              }
+            },
+          })
+        );
+      }
       const createDocument = defineTool({
         name: 'create_document',
         title: 'Create Document',

@@ -20,6 +20,7 @@ import { SocketIoAdapter } from './base/websocket';
 import { AuthGuard } from './core/auth';
 import { TelemetryService } from './core/telemetry/service';
 import { serverTimingAndCache } from './middleware/timing';
+import { installMcpBodyParser } from './plugins/copilot/mcp/body-parser';
 
 const OneMB = 1024 * 1024;
 
@@ -33,6 +34,7 @@ export async function run() {
     bufferLogs: true,
   });
 
+  installMcpBodyParser(app);
   app.useBodyParser('raw', { limit: 100 * OneMB });
 
   const logger = app.get(AFFiNELogger);

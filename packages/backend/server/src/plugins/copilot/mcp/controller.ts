@@ -74,7 +74,11 @@ export class WorkspaceMcpController {
     @Param('workspaceId') workspaceId: string
   ) {
     const abortController = new AbortController();
-    req.on('close', () => abortController.abort());
+    // IncomingMessage.close also fires when a request body finishes normally.
+    req.on('aborted', () => abortController.abort());
+    res.on('close', () => {
+      if (!res.writableEnded) abortController.abort();
+    });
 
     try {
       const token =
@@ -86,7 +90,8 @@ export class WorkspaceMcpController {
       const server = await this.provider.for(
         credential.userId,
         workspaceId,
-        credential.accessMode
+        credential.accessMode,
+        credential.id
       );
       const body = req.body as unknown;
       const isBatch = Array.isArray(body);

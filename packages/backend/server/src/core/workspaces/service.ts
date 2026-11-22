@@ -14,6 +14,7 @@ import type { SendMailCommand } from '../mail/types';
 import { WorkspaceRole } from '../permission';
 import { QuotaStateService } from '../quota/state';
 import { WorkspaceBlobStorage } from '../storage';
+import { MCP_ATTACHMENT_PREFIX } from '../storage/mcp-attachment';
 
 export type InviteInfo = {
   isLink: boolean;
@@ -68,7 +69,10 @@ export class WorkspaceService {
     const workspaceContent = await this.doc.getWorkspaceContent(workspaceId);
 
     let avatar = DEFAULT_WORKSPACE_AVATAR;
-    if (workspaceContent?.avatarKey) {
+    if (
+      workspaceContent?.avatarKey &&
+      !workspaceContent.avatarKey.startsWith(MCP_ATTACHMENT_PREFIX)
+    ) {
       const avatarBlob = await this.blobStorage.get(
         workspaceId,
         workspaceContent.avatarKey
