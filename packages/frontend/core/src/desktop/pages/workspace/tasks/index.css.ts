@@ -262,3 +262,44 @@ export const editorNote = style({
   lineHeight: 1.6,
   color: cssVar('textSecondaryColor'),
 });
+
+export const dependencyScroll = style({
+  overflow: 'auto',
+  border: `1px solid ${cssVar('borderColor')}`,
+  borderRadius: 8,
+  padding: 12,
+});
+export const dependencyLines = style({
+  position: 'absolute',
+  inset: 0,
+  color: cssVar('textSecondaryColor'),
+  pointerEvents: 'none',
+});
+export const dependencyNode = style({
+  position: 'absolute',
+  width: 244,
+  height: 98,
+  padding: 12,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 5,
+  textAlign: 'left',
+  border: `1px solid ${cssVar('borderColor')}`,
+  borderRadius: 8,
+  background: cssVar('backgroundPrimaryColor'),
+  color: cssVar('textPrimaryColor'),
+  fontSize: 12,
+  cursor: 'pointer',
+  overflowWrap: 'anywhere',
+  ':focus-visible': {
+    outline: `2px solid ${cssVar('primaryColor')}`,
+    outlineOffset: 2,
+  },
+});
+
+globalStyle(`${dependencyNode} strong`, {
+  display: '-webkit-box',
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: 'vertical',
+  overflow: 'hidden',
+});

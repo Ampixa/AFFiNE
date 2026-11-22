@@ -22,6 +22,7 @@ import { useService } from '@toeverything/infra';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
+import { TaskDependencies, taskInEpic } from './dependencies';
 import * as styles from './index.css';
 
 const labels: Record<TaskStatus, string> = {
@@ -53,6 +54,11 @@ type Draft = Pick<
   | 'priority'
   | 'dueDate'
   | 'blockedReason'
+  | 'kind'
+  | 'parentId'
+  | 'estimate'
+  | 'doneWhen'
+  | 'blockedByIds'
 >;
 const emptyDraft = (): Draft => ({
   title: '',
@@ -62,6 +68,11 @@ const emptyDraft = (): Draft => ({
   priority: 'normal',
   dueDate: null,
   blockedReason: '',
+  kind: 'task',
+  parentId: null,
+  estimate: '',
+  doneWhen: '',
+  blockedByIds: [],
 });
 const taskDraft = (task: Task): Draft => ({
   title: task.title,
@@ -71,6 +82,11 @@ const taskDraft = (task: Task): Draft => ({
   priority: task.priority,
   dueDate: task.dueDate,
   blockedReason: task.blockedReason,
+  kind: task.kind ?? 'task',
+  parentId: task.parentId ?? null,
+  estimate: task.estimate ?? '',
+  doneWhen: task.doneWhen ?? '',
+  blockedByIds: task.blockedByIds ?? [],
 });
 const dateLabel = (date: string | null) =>
   date
@@ -87,7 +103,9 @@ export const Component = () => {
   const openedTaskId = useRef<string | null>(null);
   const workbench = useService(WorkbenchService).workbench;
   const [scope, setScope] = useState('all');
-  const [view, setView] = useState<'list' | 'board'>('list');
+  const [view, setView] = useState<'list' | 'board' | 'dependencies'>('list');
+  const [epicFilter, setEpicFilter] = useState('');
+  const [blockerReview, setBlockerReview] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
@@ -103,6 +121,10 @@ export const Component = () => {
   const [notice, setNotice] = useState('');
   const [initialDraft, setInitialDraft] = useState('');
   const [documentSearch, setDocumentSearch] = useState('');
+  const tasksById = useMemo(
+    () => new Map(workspace.tasks.map(task => [task.id, task])),
+    [workspace.tasks]
+  );
 
   const filtered = useMemo(
     () =>
@@ -118,17 +140,27 @@ export const Component = () => {
             (scope !== 'attention' ||
               t.status === 'blocked' ||
               t.status === 'review') &&
+            (!epicFilter || taskInEpic(t, epicFilter, tasksById)) &&
             (!statusFilter || t.status === statusFilter) &&
             (!priorityFilter || t.priority === priorityFilter) &&
             (!ownerFilter.length || ownerFilter.includes(t.assigneeId || '')) &&
             (!query || t.title.toLowerCase().includes(query.toLowerCase()))
         )
-        .sort((a, b) => b.updatedAt - a.updatedAt),
+        .sort(
+          (a, b) =>
+            (a.dueDate ?? '9999-12-31').localeCompare(
+              b.dueDate ?? '9999-12-31'
+            ) ||
+            b.updatedAt - a.updatedAt ||
+            a.id.localeCompare(b.id)
+        ),
     [
       workspace.tasks,
+      tasksById,
       workspace.currentUserId,
       scope,
       statusFilter,
+      epicFilter,
       priorityFilter,
       ownerFilter,
       query,
@@ -175,6 +207,17 @@ export const Component = () => {
   const current = selected
     ? workspace.tasks.find(t => t.id === selected.id)
     : null;
+  const dependencyReviewKey = JSON.stringify({
+    task: selected?.id ?? null,
+    revision: current?.updatedAt,
+    status: draft.status,
+    hidden: current?.hiddenBlockers,
+    prerequisites: (draft.blockedByIds ?? []).map(id => [
+      id,
+      (tasksById.get(id) ?? current?.blockers?.find(t => t.id === id))
+        ?.status ?? null,
+    ]),
+  });
   const editable = selected ? Boolean(current?.canEdit) : workspace.canCreate;
   const administrative = selected
     ? editable && Boolean(current?.canAdmin)
@@ -185,6 +228,10 @@ export const Component = () => {
   useEffect(() => {
     if (!open || !canChangeArchive) setArchiveOpen(false);
   }, [open, canChangeArchive]);
+  useEffect(() => {
+    if (!open || !editable || blockerReview !== dependencyReviewKey)
+      setBlockerReview(null);
+  }, [open, editable, blockerReview, dependencyReviewKey]);
   const canLink = selected
     ? editable && Boolean(current?.canLink)
     : workspace.canCreate;
@@ -300,7 +347,7 @@ export const Component = () => {
   };
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft(d => ({ ...d, [key]: value }));
-  const save = async () => {
+  const save = async (acknowledgeOpenBlockers = false) => {
     if (!editable || busy) return;
     if (sourceId) {
       const source = workspace.readableDocs.find(doc => doc.id === sourceId);
@@ -317,14 +364,32 @@ export const Component = () => {
       setFormError('Explain what is blocking this task.');
       return;
     }
+    if (
+      !acknowledgeOpenBlockers &&
+      ['doing', 'done'].includes(draft.status) &&
+      draft.status !== selected?.status &&
+      (current?.hiddenBlockers ||
+        (draft.blockedByIds ?? []).some(id => {
+          const task =
+            tasksById.get(id) ?? current?.blockers?.find(t => t.id === id);
+          return !task || task.status !== 'done';
+        }))
+    ) {
+      setBlockerReview(dependencyReviewKey);
+      return;
+    }
     setBusy(true);
     setFormError('');
     try {
       if (selected) {
         const patch: TaskPatch = {};
         for (const key of Object.keys(draft) as (keyof Draft)[])
-          if (draft[key] !== selected[key])
+          if (
+            JSON.stringify(draft[key]) !==
+            JSON.stringify(taskDraft(selected)[key])
+          )
             Object.assign(patch, { [key]: draft[key] });
+        if (acknowledgeOpenBlockers) patch.acknowledgeOpenBlockers = true;
         const saved = await workspace.updateTask(
           selected.id,
           patch,
@@ -336,6 +401,7 @@ export const Component = () => {
       } else {
         await workspace.createTask({
           ...draft,
+          acknowledgeOpenBlockers,
           linkedDocIds: sourceId ? [sourceId] : [],
         });
       }
@@ -393,6 +459,17 @@ export const Component = () => {
     <span className={styles.status}>
       <span className={styles.dot} style={{ background: colors[t.status] }} />
       {labels[t.status]}
+      {t.hasOpenBlockers && (
+        <span
+          title={(t.blockers ?? [])
+            .filter(b => b.status !== 'done')
+            .map(b => b.title)
+            .join(', ')}
+        >
+          {' '}
+          · Waiting on dependencies
+        </span>
+      )}
     </span>
   );
   const owner = (t: Task) => (
@@ -505,6 +582,21 @@ export const Component = () => {
                 <option key={p}>{p}</option>
               ))}
             </select>
+            <select
+              className={styles.control}
+              aria-label="Filter epic"
+              value={epicFilter}
+              onChange={event => setEpicFilter(event.target.value)}
+            >
+              <option value="">All epics</option>
+              {workspace.tasks
+                .filter(t => t.kind === 'epic' && !t.archived)
+                .map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.title}
+                  </option>
+                ))}
+            </select>
             {!workspace.isLocal && (
               <MemberSelectorInline
                 selected={ownerFilter}
@@ -519,6 +611,7 @@ export const Component = () => {
                 setStatusFilter('');
                 setPriorityFilter('');
                 setOwnerFilter([]);
+                setEpicFilter('');
               }}
             >
               Reset
@@ -536,6 +629,13 @@ export const Component = () => {
               onClick={() => setView('board')}
             >
               Board
+            </Button>
+            <Button
+              variant="plain"
+              className={view === 'dependencies' ? styles.active : undefined}
+              onClick={() => setView('dependencies')}
+            >
+              Dependencies
             </Button>
           </div>
           <div className={styles.summary}>
@@ -570,6 +670,8 @@ export const Component = () => {
                 </Button>
               </div>
             )
+          ) : view === 'dependencies' ? (
+            <TaskDependencies tasks={filtered} onOpen={edit} />
           ) : view === 'list' ? (
             <div className={styles.tableWrap}>
               <table className={styles.table}>
@@ -593,6 +695,13 @@ export const Component = () => {
                         >
                           {t.title || 'Untitled task'}
                         </button>
+                        <span className={styles.muted}>
+                          {' '}
+                          · {t.kind ?? 'task'}
+                          {t.progress?.total
+                            ? ` · ${t.progress.done}/${t.progress.total} done`
+                            : ''}
+                        </span>
                         {!t.canEdit && (
                           <span className={styles.muted}> · read only</span>
                         )}
@@ -634,6 +743,15 @@ export const Component = () => {
                         onClick={() => edit(t)}
                       >
                         <p className={styles.cardTitle}>{t.title}</p>
+                        <div className={styles.muted}>
+                          {t.kind ?? 'task'}
+                          {t.progress?.total
+                            ? ` · ${t.progress.done}/${t.progress.total} done`
+                            : ''}
+                          {t.hasOpenBlockers
+                            ? ' · Waiting on dependencies'
+                            : ''}
+                        </div>
                         <div className={styles.cardMeta}>
                           <span>{t.priority}</span>
                           <span>{dateLabel(t.dueDate)}</span>
@@ -747,6 +865,152 @@ export const Component = () => {
                   />
                 </label>
               </div>
+              <div className={styles.grid}>
+                <label className={styles.field}>
+                  Type
+                  <select
+                    className={styles.control}
+                    value={draft.kind ?? 'task'}
+                    disabled={!editable || busy}
+                    onChange={event => {
+                      set('kind', event.target.value as Task['kind']);
+                      set('parentId', null);
+                    }}
+                  >
+                    <option value="task">Task</option>
+                    <option value="epic">Epic / workstream</option>
+                    <option value="subtask">Subtask</option>
+                  </select>
+                </label>
+                {draft.kind !== 'epic' && (
+                  <label className={styles.field}>
+                    {draft.kind === 'subtask'
+                      ? 'Parent task'
+                      : 'Epic · optional'}
+                    <select
+                      className={styles.control}
+                      value={draft.parentId ?? ''}
+                      disabled={!editable || busy}
+                      onChange={event =>
+                        set('parentId', event.target.value || null)
+                      }
+                    >
+                      <option value="">
+                        {current?.parentUnavailable
+                          ? 'Parent unavailable'
+                          : 'No parent'}
+                      </option>
+                      {workspace.tasks
+                        .filter(
+                          task =>
+                            task.id !== selected?.id &&
+                            (!task.archived || task.id === draft.parentId) &&
+                            task.kind ===
+                              (draft.kind === 'subtask' ? 'task' : 'epic')
+                        )
+                        .map(task => (
+                          <option key={task.id} value={task.id}>
+                            {task.title}
+                            {task.archived ? ' · Archived' : ''}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                )}
+                <label className={styles.field}>
+                  Estimate · optional
+                  <input
+                    className={styles.control}
+                    value={draft.estimate ?? ''}
+                    maxLength={100}
+                    disabled={!editable || busy}
+                    onChange={event => set('estimate', event.target.value)}
+                    placeholder="For example, two afternoons"
+                  />
+                </label>
+              </div>
+              <label className={styles.field}>
+                Done when · optional
+                <textarea
+                  className={styles.control}
+                  value={draft.doneWhen ?? ''}
+                  maxLength={2000}
+                  rows={2}
+                  disabled={!editable || busy}
+                  onChange={event => set('doneWhen', event.target.value)}
+                  placeholder="What outcome will tell us this is finished?"
+                />
+              </label>
+              <label className={styles.field}>
+                Blocked by · optional
+                <select
+                  multiple
+                  className={styles.control}
+                  value={draft.blockedByIds ?? []}
+                  disabled={!editable || busy || current?.hiddenBlockers}
+                  onChange={event =>
+                    set(
+                      'blockedByIds',
+                      Array.from(
+                        event.target.selectedOptions,
+                        option => option.value
+                      )
+                    )
+                  }
+                  size={Math.min(5, Math.max(2, workspace.tasks.length))}
+                >
+                  {workspace.tasks
+                    .filter(
+                      task =>
+                        task.id !== selected?.id &&
+                        (!task.archived ||
+                          draft.blockedByIds?.includes(task.id))
+                    )
+                    .map(task => (
+                      <option key={task.id} value={task.id}>
+                        {task.title} · {task.archived ? 'Archived · ' : ''}
+                        {labels[task.status]}
+                      </option>
+                    ))}
+                </select>
+                <span className={styles.muted}>
+                  Select prerequisites. Hold Command or Control to select more
+                  than one. Their completion updates this task’s dependency
+                  badge.
+                </span>
+                {current?.hiddenBlockers && (
+                  <span>
+                    Some dependencies are unavailable. Ask an admin with access
+                    to update them.
+                  </span>
+                )}
+              </label>
+              {current?.structureIncomplete && (
+                <p role="status">
+                  Some connections exceed the display limit. Narrow the
+                  workstream; completion totals are unavailable.
+                </p>
+              )}
+              {!!current?.blocks?.length && (
+                <div className={styles.field}>
+                  This task blocks
+                  {current.blocks.map(task => (
+                    <button
+                      key={task.id}
+                      className={styles.titleButton}
+                      disabled={dirty || busy || Boolean(commentBody.trim())}
+                      onClick={() => {
+                        const target = workspace.tasks.find(
+                          t => t.id === task.id
+                        );
+                        if (target) edit(target);
+                      }}
+                    >
+                      {task.title}
+                    </button>
+                  ))}
+                </div>
+              )}
               {draft.status === 'blocked' && (
                 <label className={styles.field}>
                   What’s blocking this?
@@ -1053,6 +1317,21 @@ export const Component = () => {
           </>
         )}
       </Modal>
+      <ConfirmModal
+        open={Boolean(
+          open && editable && blockerReview === dependencyReviewKey
+        )}
+        title="Continue with open dependencies?"
+        description="This task still depends on unfinished work. You can continue if this is intentional; the dependency warning stays visible until the prerequisites are done."
+        confirmText="Continue anyway"
+        cancelText="Review dependencies"
+        onConfirm={async () => {
+          if (blockerReview !== dependencyReviewKey) return;
+          setBlockerReview(null);
+          await save(true);
+        }}
+        onCancel={() => setBlockerReview(null)}
+      />
       <ConfirmModal
         open={archiveOpen}
         title={selected?.archived ? 'Restore task?' : 'Archive task?'}

@@ -10,6 +10,20 @@ The task list follows opaque pagination cursors (including empty permission-filt
 
 Local-only workspaces show that team tasks require a signed-in workspace. Existing local task documents are not scanned, deleted, or rewritten by this view. The one-time legacy import is a separately reviewed server migration; there is no automatic document scan on an ordinary Tasks request.
 
+## Optional grouping and dependencies
+
+Tasks may be grouped into epics, with optional subtasks under a task. Estimate and done-when are free-text context, not scheduling requirements. Direct active children provide a completion count; marking a parent done does not silently complete its children. The list sorts dated work first, and epic/owner filters apply across the list, board and dependency view. The diagram uses AFFiNE theme tokens and keyboard-accessible task buttons.
+
+`POST /api/workspaces/:workspaceId/tasks` and the existing versioned PATCH accept `kind`, `parentId`, `estimate`, `doneWhen`, and `blockedByIds`. MCP exposes these on create/update, plus `set_task_dependencies`. Members may change structure on their assigned task; this does not grant access to prerequisite tasks or linked documents. Creating a new relationship requires read access to the target. Existing inaccessible relationships are preserved, shown only as a generic warning, and do not prevent an explicitly acknowledged progress update.
+
+Optional planning fields live in a one-to-one `task_planning` record; ordinary task rows keep their existing fields and need no planning record. Prerequisites live in `task_dependencies`, separately from document links. Both relations enforce the workspace boundary in the database. The additive migration creates these tables and a supporting task index without rewriting existing tasks or document contents; it must be applied before activating this feature.
+
+Hierarchy and dependency cycles are rejected inside a per-workspace PostgreSQL transaction lock. Archive changes share that lock so a new relationship cannot race its target becoming archived. Moving to in-progress or done with open prerequisites requires `acknowledgeOpenBlockers: true`; an archived unfinished prerequisite remains unresolved. The confirmation is tied to the current task, revision and prerequisite state, and closes when access or that context changes.
+
+Read responses fetch bounded direct relationships alongside the requested tasks, without a separate workspace task scan. Exceptionally large neighborhoods are marked incomplete and omit completion totals. Relationship mutations currently support up to 5,000 workspace tasks; ordinary reads, task creation and progress updates remain available beyond that limit. Related metadata includes only permitted document anchors in `structureDocIds`; the frontend establishes access listeners and re-fetches before displaying those relationships, including in document-filtered task views. Revocation clears stale related titles, status and progress through the existing invalidation flow.
+
+Workspace document search already supports the optional `AFFINE_COPILOT_DOCUMENT_SEARCH_FALLBACK` setting when indexed search is unavailable. It is disabled by default; enabling it is an operator decision. The fallback is bounded, checks current document permissions and workspace AI/search opt-outs, and returns explicit coverage. This task feature does not enable an indexer, embedding provider, or production configuration.
+
 ## Archive and restore
 
 Tasks use reversible archiving; there is no hard-delete operation. A task creator or workspace admin with task write access may archive it. An assignee who did not create the task cannot archive it solely by being assigned. Only workspace admins can restore archived tasks. Membership, role, task visibility and the revision are checked again during the transaction. Task documents, context links, comments and history are retained.

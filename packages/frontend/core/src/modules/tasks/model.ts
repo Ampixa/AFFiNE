@@ -27,6 +27,13 @@ export interface TaskComment {
   edited: boolean;
   canEdit: boolean;
 }
+export type TaskKind = 'epic' | 'task' | 'subtask';
+export interface TaskRelation {
+  archived: boolean;
+  id: string;
+  title: string;
+  status: TaskStatus;
+}
 export interface Task {
   id: string;
   title: string;
@@ -50,6 +57,20 @@ export interface Task {
   comments?: TaskComment[];
   commentsNextCursor?: number | null;
   legacyLinksDetected?: boolean;
+  kind?: TaskKind;
+  parentId?: string | null;
+  parentUnavailable?: boolean;
+  estimate?: string;
+  doneWhen?: string;
+  blockedByIds?: string[];
+  blockers?: TaskRelation[];
+  blocks?: TaskRelation[];
+  hasOpenBlockers?: boolean;
+  hiddenBlockers?: boolean;
+  /** Permitted document anchors for related-task metadata and progress. */
+  structureDocIds?: string[];
+  structureIncomplete?: boolean;
+  progress?: { done: number; total: number };
 }
 export type TaskPatch = Partial<
   Pick<
@@ -62,8 +83,13 @@ export type TaskPatch = Partial<
     | 'dueDate'
     | 'blockedReason'
     | 'archived'
+    | 'kind'
+    | 'parentId'
+    | 'estimate'
+    | 'doneWhen'
+    | 'blockedByIds'
   >
->;
+> & { acknowledgeOpenBlockers?: boolean };
 export type CreateTaskInput = TaskPatch & {
   title: string;
   linkedDocIds?: string[];
@@ -131,6 +157,48 @@ export function validateTaskPatch(patch: TaskPatch, current?: Task): TaskPatch {
     )
       throw new Error('Keep the blocker description under 2,000 characters.');
     clean.blockedReason = patch.blockedReason.trim();
+  }
+  if (patch.kind !== undefined) {
+    if (!['epic', 'task', 'subtask'].includes(patch.kind))
+      throw new Error('Choose a valid task type.');
+    clean.kind = patch.kind;
+  }
+  if (patch.parentId !== undefined) {
+    if (
+      patch.parentId !== null &&
+      (typeof patch.parentId !== 'string' ||
+        !patch.parentId ||
+        patch.parentId.length > 128)
+    )
+      throw new Error('Choose a parent task.');
+    clean.parentId = patch.parentId;
+  }
+  for (const field of ['estimate', 'doneWhen'] as const) {
+    const value = patch[field];
+    if (value !== undefined) {
+      if (
+        typeof value !== 'string' ||
+        value.length > (field === 'estimate' ? 100 : 2000)
+      )
+        throw new Error('Keep optional task details concise.');
+      clean[field] = value;
+    }
+  }
+  if (patch.blockedByIds !== undefined) {
+    if (
+      !Array.isArray(patch.blockedByIds) ||
+      patch.blockedByIds.length > 50 ||
+      patch.blockedByIds.some(
+        id => typeof id !== 'string' || !id || id.length > 128
+      )
+    )
+      throw new Error('Choose up to 50 blocker tasks.');
+    clean.blockedByIds = [...new Set(patch.blockedByIds)];
+  }
+  if (patch.acknowledgeOpenBlockers !== undefined) {
+    if (typeof patch.acknowledgeOpenBlockers !== 'boolean')
+      throw new Error('Invalid blocker acknowledgement.');
+    clean.acknowledgeOpenBlockers = patch.acknowledgeOpenBlockers;
   }
   if (patch.archived !== undefined) {
     if (typeof patch.archived !== 'boolean')

@@ -238,7 +238,7 @@ export function useTasks(options: { docId?: string } = {}) {
       try {
         let result = await fetchPages();
         if (!active()) return;
-        // Only linked documents and legacy detail documents need access listeners.
+        // Watch document anchors for both task content and related-task metadata.
         // Ordinary documents are never scanned to find tasks.
         let ids = new Set<string>();
         let stable = false;
@@ -248,6 +248,7 @@ export function useTasks(options: { docId?: string } = {}) {
             ...result.tasks.flatMap(task =>
               task.detailDocId ? [task.detailDocId] : []
             ),
+            ...result.tasks.flatMap(task => task.structureDocIds ?? []),
           ]);
           let subscribed = false;
           for (const id of ids) {
@@ -513,6 +514,7 @@ export function useTasks(options: { docId?: string } = {}) {
           const ids = new Set([
             ...task.linkedDocIds,
             ...(task.detailDocId ? [task.detailDocId] : []),
+            ...(task.structureDocIds ?? []),
           ]);
           let subscribed = false;
           for (const docId of ids) {

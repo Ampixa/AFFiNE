@@ -1479,16 +1479,49 @@ model WorkspaceTask {
   createdBy     String?  @map("created_by") @db.VarChar
   updatedBy     String?  @map("updated_by") @db.VarChar
 
-  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  links     TaskDocumentLink[]
-  activity  TaskActivity[]
-  comments  TaskComment[]
+  workspace  Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  links      TaskDocumentLink[]
+  activity   TaskActivity[]
+  comments   TaskComment[]
+  planning   TaskPlanning?      @relation("TaskPlanning")
+  childPlans TaskPlanning[]     @relation("TaskHierarchy")
+  blockedBy  TaskDependency[]   @relation("TaskBlockedBy")
+  blocks     TaskDependency[]   @relation("TaskBlocks")
 
   @@unique([workspaceId, legacyDocId])
+  @@unique([workspaceId, id])
   @@index([workspaceId, createdAt, id])
   @@index([workspaceId, archived, status])
   @@index([workspaceId, assigneeId])
   @@map("workspace_tasks")
+}
+
+// Optional planning metadata does not change ordinary task records.
+model TaskPlanning {
+  taskId      String         @id @map("task_id") @db.VarChar
+  workspaceId String         @map("workspace_id") @db.VarChar
+  kind        String         @default("task") @db.Text
+  parentId    String?        @map("parent_id") @db.VarChar
+  estimate    String         @default("") @db.Text
+  doneWhen    String         @default("") @map("done_when") @db.Text
+  task        WorkspaceTask  @relation("TaskPlanning", fields: [workspaceId, taskId], references: [workspaceId, id], onDelete: Cascade)
+  parent      WorkspaceTask? @relation("TaskHierarchy", fields: [workspaceId, parentId], references: [workspaceId, id], onDelete: NoAction)
+
+  @@unique([workspaceId, taskId])
+  @@index([workspaceId, parentId, taskId])
+  @@map("task_planning")
+}
+
+model TaskDependency {
+  workspaceId String        @map("workspace_id") @db.VarChar
+  taskId      String        @map("task_id") @db.VarChar
+  blockerId   String        @map("blocker_id") @db.VarChar
+  task        WorkspaceTask @relation("TaskBlockedBy", fields: [workspaceId, taskId], references: [workspaceId, id], onDelete: Cascade)
+  blocker     WorkspaceTask @relation("TaskBlocks", fields: [workspaceId, blockerId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@id([taskId, blockerId])
+  @@index([blockerId, taskId])
+  @@map("task_dependencies")
 }
 
 model TaskDocumentLink {
