@@ -87,17 +87,8 @@ export class MermaidPreview extends SignalWatcher(
       transform-origin: center;
     }
 
-    /* Mermaid embeds theme CSS that may not apply after sanitization. */
-    .mermaid-preview-svg svg text,
-    .mermaid-preview-svg svg tspan {
-      fill: ${unsafeCSSVarV2('text/primary')} !important;
-    }
-
-    .mermaid-preview-svg foreignObject div,
-    .mermaid-preview-svg foreignObject span,
-    .mermaid-preview-svg foreignObject p {
-      color: ${unsafeCSSVarV2('text/primary')} !important;
-    }
+    /* Keep each renderer's paired node and label colors. Overriding just the
+       labels breaks contrast on explicitly styled nodes and native diagrams. */
 
     .mermaid-controls {
       position: absolute;
