@@ -20,6 +20,7 @@ import { Models } from '../../../models';
 import type { StorageProviderCapabilities } from '../../../native';
 import { StorageRuntimeProvider } from '../../storage-runtime';
 import { MULTIPART_PART_SIZE } from '../constants';
+import { MCP_ATTACHMENT_PREFIX } from '../mcp-attachment';
 
 declare global {
   interface Events {
@@ -73,11 +74,17 @@ export class WorkspaceBlobStorage {
     private readonly config: Config
   ) {}
 
-  async put(workspaceId: string, key: string, blob: Buffer) {
+  async put(
+    workspaceId: string,
+    key: string,
+    blob: Buffer,
+    options?: PutObjectMetadata
+  ) {
     const metadata = await this.rt.putObject(
       'blob',
       `${workspaceId}/${key}`,
-      blob
+      blob,
+      options
     );
     await this.upsert(workspaceId, key, {
       contentType: metadata.contentType,
@@ -307,7 +314,7 @@ export class WorkspaceBlobStorage {
   }
 
   getAvatarUrl(workspaceId: string, avatarKey: string | null) {
-    if (!avatarKey) {
+    if (!avatarKey || avatarKey.startsWith(MCP_ATTACHMENT_PREFIX)) {
       return undefined;
     }
     return this.url.link(`/api/workspaces/${workspaceId}/blobs/${avatarKey}`);
