@@ -372,6 +372,8 @@ test('read-only MCP has task discovery but no mutations and binds actor to authe
   for (const name of [
     'create_task',
     'update_task',
+    'archive_task',
+    'restore_task',
     'link_task_document',
     'add_task_comment',
     'edit_task_comment',
@@ -635,4 +637,48 @@ test('unlink preview applies remove only after confirmation', async t => {
   await f.service.decide('user', p.proposalId, 'apply');
   t.is(f.links[0][4], true);
   t.deepEqual(f.row.linkedDocIds, []);
+});
+
+test('MCP archive and restore bind the actor and workspace and require a revision', async t => {
+  const calls: unknown[][] = [];
+  const provider = new WorkspaceMcpProvider(
+    {
+      user: () => ({ workspace: () => ({ assert: async () => {} }) }),
+    } as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {
+      archive: async (...args: unknown[]) => {
+        calls.push(args);
+        return { saved: true };
+      },
+    } as never
+  );
+  const server = await provider.for(
+    'authenticated-user',
+    'workspace',
+    McpAccessMode.READ_WRITE
+  );
+  const signal = new AbortController().signal;
+  for (const [name, restore] of [
+    ['archive_task', false],
+    ['restore_task', true],
+  ] as const) {
+    const tool = server.tools.find(tool => tool.name === name)!;
+    t.true((await tool.execute({ taskId: 'task' }, { signal })).isError);
+    const result = await tool.execute(
+      { taskId: 'task', expectedUpdatedAt: 1000 },
+      { signal }
+    );
+    t.falsy(result.isError);
+    t.deepEqual(calls.at(-1), [
+      'authenticated-user',
+      'workspace',
+      'task',
+      { expectedUpdatedAt: 1000 },
+      ...(restore ? [true] : []),
+    ]);
+  }
 });

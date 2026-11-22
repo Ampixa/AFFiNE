@@ -57,6 +57,10 @@ export const createSchema = fields
     linkedDocIds: z.array(identifier).max(20).default([]),
   })
   .strict();
+export const taskRevisionSchema = z
+  .object({ expectedUpdatedAt: z.number().int().nonnegative() })
+  .strict();
+
 export const patchSchema = fields
   .partial()
   .extend({
@@ -293,9 +297,8 @@ export class WorkspaceTasksService {
       : [];
     const admin =
       adminCapability ?? (await this.isAdmin(userId, row.workspaceId));
-    const editable =
+    const writable =
       canWrite &&
-      (admin || row.assigneeId === userId) &&
       (!row.legacyDocId ||
         (await this.docAllowed(
           userId,
@@ -303,8 +306,12 @@ export class WorkspaceTasksService {
           row.legacyDocId,
           true
         )));
+    const editable = writable && (admin || row.assigneeId === userId);
     return {
       canAdmin: admin,
+      canArchive:
+        writable && !row.archived && (admin || row.createdBy === userId),
+      canRestore: writable && row.archived && admin,
       canLink: editable,
       canComment: true,
       comments: detail
@@ -559,6 +566,57 @@ export class WorkspaceTasksService {
     return this.get(userId, workspaceId, row.id);
   }
 
+  private assertPatchPermission(
+    userId: string,
+    row: WorkspaceTask,
+    patch: Partial<z.infer<typeof fields>>,
+    admin: boolean,
+    assignedOnly: boolean
+  ) {
+    if (
+      assignedOnly &&
+      (row.assigneeId !== userId || patch.archived !== undefined)
+    )
+      throw new ActionForbidden(
+        'Task ownership changed or operation is not allowed in Intelligence.'
+      );
+    if (admin) return;
+    if (patch.archived !== undefined) {
+      if (
+        Object.keys(patch).length !== 1 ||
+        !patch.archived ||
+        row.createdBy !== userId
+      )
+        throw new ActionForbidden(
+          'Only the task creator or a workspace admin may archive. Only admins may restore.'
+        );
+      return;
+    }
+    if (
+      row.assigneeId !== userId ||
+      Object.keys(patch).some(
+        key => !['description', 'status', 'blockedReason'].includes(key)
+      )
+    )
+      throw new ActionForbidden(
+        'Only the assigned owner can update task progress. Other fields require an admin.'
+      );
+  }
+
+  async archive(
+    userId: string,
+    workspaceId: string,
+    id: string,
+    input: unknown,
+    restore = false
+  ) {
+    const revision = parse(taskRevisionSchema, input);
+    return this.update(userId, workspaceId, id, {
+      ...revision,
+      archived: !restore,
+    });
+  }
+
   async update(
     userId: string,
     workspaceId: string,
@@ -571,39 +629,30 @@ export class WorkspaceTasksService {
     if (!Object.keys(patch).length)
       throw new BadRequest('No task changes provided.');
     const admin = await this.isAdmin(userId, workspaceId);
-    if (assignedOnly && row.assigneeId !== userId)
-      throw new ActionForbidden('Task ownership changed.');
-    if (
-      !admin &&
-      (row.assigneeId !== userId ||
-        Object.keys(patch).some(
-          key => !['description', 'status', 'blockedReason'].includes(key)
-        ))
-    )
-      throw new ActionForbidden(
-        'Only the assigned owner can update task progress. Other fields require an admin.'
-      );
+    this.assertPatchPermission(userId, row, patch, admin, assignedOnly);
     this.validateState({ ...row, ...patch });
     await this.assignee(workspaceId, patch.assigneeId, row.legacyDocId);
     await this.db.$transaction(async tx => {
       await this.lockActor(tx, userId, workspaceId);
-      await this.task(userId, workspaceId, id, true);
+      const current = await this.task(userId, workspaceId, id, true);
       const currentAdmin = await this.isAdmin(userId, workspaceId);
-      if (
-        !currentAdmin &&
-        Object.keys(patch).some(
-          key => !['description', 'status', 'blockedReason'].includes(key)
-        )
-      )
-        throw new ActionForbidden(
-          'Task administration requires a workspace admin.'
-        );
+      this.assertPatchPermission(
+        userId,
+        current,
+        patch,
+        currentAdmin,
+        assignedOnly
+      );
       const changed = await tx.workspaceTask.updateMany({
         where: {
           id,
           workspaceId,
           version: row.version,
-          ...(!currentAdmin || assignedOnly ? { assigneeId: userId } : {}),
+          ...(!currentAdmin && patch.archived !== undefined
+            ? { createdBy: userId }
+            : !currentAdmin || assignedOnly
+              ? { assigneeId: userId }
+              : {}),
           updatedAt: new Date(expectedUpdatedAt),
         },
         data: {
@@ -621,7 +670,12 @@ export class WorkspaceTasksService {
         data: {
           taskId: id,
           actorId: userId,
-          body: `Updated ${Object.keys(patch).sort().join(', ')}.`,
+          body:
+            Object.keys(patch).length === 1 && patch.archived !== undefined
+              ? patch.archived
+                ? 'Archived task.'
+                : 'Restored task.'
+              : `Updated ${Object.keys(patch).sort().join(', ')}.`,
         },
       });
     });
@@ -859,6 +913,33 @@ export class WorkspaceTasksController {
   ) {
     this.mutation(req);
     return this.tasks.update(user.id, ws, id, body);
+  }
+
+  // DELETE is reversible: preserve task history, comments, links and documents.
+  @Header('Cache-Control', 'private, no-store')
+  @Delete(':id')
+  archive(
+    @CurrentUser() user: CurrentUser,
+    @Param('workspaceId') ws: string,
+    @Param('id') id: string,
+    @Req() req: Request,
+    @Body() body: unknown
+  ) {
+    this.mutation(req);
+    return this.tasks.archive(user.id, ws, id, body);
+  }
+
+  @Header('Cache-Control', 'private, no-store')
+  @Post(':id/restore')
+  restore(
+    @CurrentUser() user: CurrentUser,
+    @Param('workspaceId') ws: string,
+    @Param('id') id: string,
+    @Req() req: Request,
+    @Body() body: unknown
+  ) {
+    this.mutation(req);
+    return this.tasks.archive(user.id, ws, id, body, true);
   }
 
   @Header('Cache-Control', 'private, no-store')

@@ -10,6 +10,12 @@ The task list follows opaque pagination cursors (including empty permission-filt
 
 Local-only workspaces show that team tasks require a signed-in workspace. Existing local task documents are not scanned, deleted, or rewritten by this view. The one-time legacy import is a separately reviewed server migration; there is no automatic document scan on an ordinary Tasks request.
 
+## Archive and restore
+
+Tasks use reversible archiving; there is no hard-delete operation. A task creator or workspace admin with task write access may archive it. An assignee who did not create the task cannot archive it solely by being assigned. Only workspace admins can restore archived tasks. Membership, role, task visibility and the revision are checked again during the transaction. Task documents, context links, comments and history are retained.
+
+The task detail panel uses server-provided `canArchive` and `canRestore` capabilities and an AFFiNE confirmation dialog. Archived tasks remain available in the Archived scope. REST clients may use `DELETE /api/workspaces/:workspaceId/tasks/:id` to archive and `POST /api/workspaces/:workspaceId/tasks/:id/restore` to restore, passing `{ "expectedUpdatedAt": <latest read timestamp> }`. Cookie-authenticated mutations need the normal CSRF header. `PATCH` with `archived` remains supported under the same permissions; members must send an archive-only patch. MCP exposes `archive_task` and `restore_task` for read-write credentials, with the same revision and server checks. Intelligence cannot archive or restore tasks.
+
 ## Validation scope
 
 Frontend hook tests use real React state with mocked HTTP/identity/event services. They verify constant-request discovery independent of workspace document count, pagination, private-context invalidation, stale-response rejection, subscription stabilization, CSRF/version handling and no automatic mutation replay. Component tests cover assignment, description editing, permission downgrade, stale drafts, context filtering and archive controls. Authenticated local replica checks and measured request timings must precede deployment; passing mocked tests alone is not a production performance claim.

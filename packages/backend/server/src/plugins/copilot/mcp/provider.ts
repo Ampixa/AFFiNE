@@ -8,6 +8,7 @@ import { PermissionAccess } from '../../../core/permission';
 import {
   createSchema,
   patchSchema,
+  taskRevisionSchema,
   WorkspaceTasksService,
 } from '../../../core/workspaces/tasks';
 import { DocumentRetrievalService } from '../retrieval/document';
@@ -677,10 +678,24 @@ export class WorkspaceMcpProvider {
         );
         add(
           'update_task',
-          'Update task fields using expectedUpdatedAt from read_task. Members may update only own progress; admins may set ownership, deadlines, priority, title and archive state.',
+          'Update task fields using expectedUpdatedAt from read_task. Members may update own progress or archive tasks they created; only admins may restore or set ownership, deadlines, priority and title.',
           patchSchema.extend({ taskId: id }),
           ({ taskId, ...patch }) =>
             service.update(userId, workspaceId, taskId, patch)
+        );
+        add(
+          'archive_task',
+          'Reversibly archive a task you created, or any permitted task as an admin. Keeps comments, history and linked documents. Pass expectedUpdatedAt from read_task. Archived tasks remain in list_tasks with archived=true.',
+          taskRevisionSchema.extend({ taskId: id }),
+          ({ taskId, ...revision }) =>
+            service.archive(userId, workspaceId, taskId, revision)
+        );
+        add(
+          'restore_task',
+          'Restore an archived task. Workspace admins only. Pass expectedUpdatedAt from read_task; existing documents, comments and history are retained.',
+          taskRevisionSchema.extend({ taskId: id }),
+          ({ taskId, ...revision }) =>
+            service.archive(userId, workspaceId, taskId, revision, true)
         );
         add(
           'link_task_document',
