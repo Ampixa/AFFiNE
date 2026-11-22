@@ -1471,6 +1471,10 @@ model WorkspaceTask {
   assigneeId    String?  @map("assignee_id") @db.VarChar
   dueDate       String?  @map("due_date") @db.VarChar(10)
   blockedReason String   @default("") @map("blocked_reason") @db.Text
+  kind          String   @default("task") @db.Text
+  parentId      String?  @map("parent_id") @db.VarChar
+  estimate      String   @default("") @db.Text
+  doneWhen      String   @default("") @map("done_when") @db.Text
   // Imported tasks retain their original document's read/edit boundary.
   legacyDocId   String?  @map("legacy_doc_id") @db.VarChar
   version       Int      @default(1)
@@ -1483,12 +1487,28 @@ model WorkspaceTask {
   links     TaskDocumentLink[]
   activity  TaskActivity[]
   comments  TaskComment[]
+  parent    WorkspaceTask?     @relation("TaskHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children  WorkspaceTask[]    @relation("TaskHierarchy")
+  blockedBy TaskDependency[]   @relation("TaskBlockedBy")
+  blocks    TaskDependency[]   @relation("TaskBlocks")
 
   @@unique([workspaceId, legacyDocId])
   @@index([workspaceId, createdAt, id])
   @@index([workspaceId, archived, status])
   @@index([workspaceId, assigneeId])
+  @@index([workspaceId, parentId])
   @@map("workspace_tasks")
+}
+
+model TaskDependency {
+  taskId    String        @map("task_id") @db.VarChar
+  blockerId String        @map("blocker_id") @db.VarChar
+  task      WorkspaceTask @relation("TaskBlockedBy", fields: [taskId], references: [id], onDelete: Cascade)
+  blocker   WorkspaceTask @relation("TaskBlocks", fields: [blockerId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, blockerId])
+  @@index([blockerId, taskId])
+  @@map("task_dependencies")
 }
 
 model TaskDocumentLink {

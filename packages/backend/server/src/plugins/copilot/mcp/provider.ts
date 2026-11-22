@@ -677,8 +677,21 @@ export class WorkspaceMcpProvider {
         );
         add(
           'update_task',
-          'Update task fields using expectedUpdatedAt from read_task. Members may update only own progress; admins may set ownership, deadlines, priority, title and archive state.',
+          'Update task fields using expectedUpdatedAt from read_task. Members may update only own progress and optional structure; admins may set ownership, deadlines, priority, title and archive state. Moving to doing/done with unresolved prerequisites requires acknowledgeOpenBlockers:true after reviewing read_task warnings.',
           patchSchema.extend({ taskId: id }),
+          ({ taskId, ...patch }) =>
+            service.update(userId, workspaceId, taskId, patch)
+        );
+        add(
+          'set_task_dependencies',
+          'Replace the prerequisites of a task you can edit. Read first and pass expectedUpdatedAt. New dependencies must be accessible tasks in this workspace; cycles are refused. Inaccessible existing prerequisites cannot be silently removed by replacing the visible list.',
+          z
+            .object({
+              taskId: id,
+              blockedByIds: z.array(id).max(50),
+              expectedUpdatedAt: z.number().int(),
+            })
+            .strict(),
           ({ taskId, ...patch }) =>
             service.update(userId, workspaceId, taskId, patch)
         );

@@ -10,6 +10,16 @@ The task list follows opaque pagination cursors (including empty permission-filt
 
 Local-only workspaces show that team tasks require a signed-in workspace. Existing local task documents are not scanned, deleted, or rewritten by this view. The one-time legacy import is a separately reviewed server migration; there is no automatic document scan on an ordinary Tasks request.
 
+## Optional grouping and dependencies
+
+Tasks may be grouped into epics, with optional subtasks under a task. Estimate and done-when are free-text context, not scheduling requirements. Direct active children provide a completion count; marking a parent done does not silently complete its children. The list sorts dated work first, and epic/owner filters apply across the list, board and dependency view. The diagram uses AFFiNE theme tokens and keyboard-accessible task buttons.
+
+`POST /api/workspaces/:workspaceId/tasks` and the existing versioned PATCH accept `kind`, `parentId`, `estimate`, `doneWhen`, and `blockedByIds`. MCP exposes these on create/update, plus `set_task_dependencies`. Members may change structure on their assigned task; this does not grant access to prerequisite tasks or linked documents. Creating a new relationship requires read access to the target. Existing inaccessible relationships are preserved, shown only as a generic warning, and do not prevent an explicitly acknowledged progress update.
+
+Dependencies are stored separately from document links. Hierarchy and dependency cycles are rejected inside a per-workspace PostgreSQL transaction lock. Moving to in-progress or done with open prerequisites requires `acknowledgeOpenBlockers: true`; an archived unfinished prerequisite remains unresolved. Read responses build only the requested tasks’ direct neighborhood. Exceptionally large neighborhoods are marked incomplete and omit completion totals. Relationship mutations currently support up to 5,000 workspace tasks; ordinary reads, task creation and progress updates remain available beyond that limit.
+
+Workspace document search already supports the optional `AFFINE_COPILOT_DOCUMENT_SEARCH_FALLBACK` setting when indexed search is unavailable. It is disabled by default; enabling it is an operator decision. The fallback is bounded, checks current document permissions and workspace AI/search opt-outs, and returns explicit coverage. This task feature does not enable an indexer, embedding provider, or production configuration.
+
 ## Validation scope
 
 Frontend hook tests use real React state with mocked HTTP/identity/event services. They verify constant-request discovery independent of workspace document count, pagination, private-context invalidation, stale-response rejection, subscription stabilization, CSRF/version handling and no automatic mutation replay. Component tests cover assignment, description editing, permission downgrade, stale drafts, context filtering and archive controls. Authenticated local replica checks and measured request timings must precede deployment; passing mocked tests alone is not a production performance claim.

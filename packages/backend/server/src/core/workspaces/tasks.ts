@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   Body,
   Controller,
@@ -26,6 +28,11 @@ import {
 import { AuthService, CurrentUser } from '../auth';
 import { PgWorkspaceDocStorageAdapter } from '../doc';
 import { PermissionAccess } from '../permission';
+import {
+  type StructuredTask,
+  summarizeTaskStructure,
+  validateTaskStructure,
+} from './task-structure';
 
 const identifier = z.string().min(1).max(128);
 const fields = z.object({
@@ -48,6 +55,10 @@ const fields = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .nullable(),
   blockedReason: z.string().max(2000),
+  kind: z.enum(['epic', 'task', 'subtask']),
+  parentId: identifier.nullable(),
+  estimate: z.string().max(100),
+  doneWhen: z.string().max(2000),
 });
 export const createSchema = fields
   .omit({ archived: true })
@@ -55,12 +66,16 @@ export const createSchema = fields
   .extend({
     title: fields.shape.title,
     linkedDocIds: z.array(identifier).max(20).default([]),
+    blockedByIds: z.array(identifier).max(50).default([]),
+    acknowledgeOpenBlockers: z.boolean().optional(),
   })
   .strict();
 export const patchSchema = fields
   .partial()
   .extend({
     expectedUpdatedAt: z.number().int().nonnegative(),
+    blockedByIds: z.array(identifier).max(50).optional(),
+    acknowledgeOpenBlockers: z.boolean().optional(),
   })
   .strict();
 
@@ -319,6 +334,9 @@ export class WorkspaceTasksService {
       assigneeId: row.assigneeId,
       dueDate: row.dueDate,
       blockedReason: row.blockedReason,
+      kind: row.kind ?? 'task',
+      estimate: row.estimate ?? '',
+      doneWhen: row.doneWhen ?? '',
       updatedAt: row.updatedAt.getTime(),
       version: row.version,
       detailDocId: row.legacyDocId,
@@ -331,6 +349,205 @@ export class WorkspaceTasksService {
         at: e.createdAt.getTime(),
       })),
     };
+  }
+
+  private async structureRows(
+    workspaceId: string,
+    tx: Prisma.TransactionClient = this.db
+  ): Promise<StructuredTask[]> {
+    const rows = await tx.workspaceTask.findMany({
+      where: { workspaceId },
+      skip: 0,
+      take: 5001,
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        archived: true,
+        kind: true,
+        parentId: true,
+        legacyDocId: true,
+        blockedBy: { select: { blockerId: true } },
+      },
+    });
+    if (rows.length > 5000)
+      throw new BadRequest(
+        'Relationship editing supports up to 5,000 workspace tasks. Ordinary task creation and progress updates remain available.'
+      );
+    return rows.map(row => ({
+      ...row,
+      kind: row.kind ?? 'task',
+      parentId: row.parentId ?? null,
+      blockedBy: row.blockedBy ?? [],
+    }));
+  }
+
+  private async structureSummary(
+    userId: string,
+    workspaceId: string,
+    requestedIds: string[]
+  ) {
+    const select = {
+      id: true,
+      title: true,
+      status: true,
+      archived: true,
+      kind: true,
+      parentId: true,
+      legacyDocId: true,
+      blockedBy: { select: { blockerId: true } },
+    } satisfies Prisma.WorkspaceTaskSelect;
+    const seeds = requestedIds.length
+      ? await this.db.workspaceTask.findMany({
+          where: { workspaceId, id: { in: requestedIds } },
+          select,
+        })
+      : [];
+    const referencedIds = [
+      ...new Set(
+        seeds.flatMap(row => [
+          ...(row.parentId ? [row.parentId] : []),
+          ...row.blockedBy.map(edge => edge.blockerId),
+        ])
+      ),
+    ];
+    // Only direct neighbors of this page. Unrelated workspace tasks never enter
+    // read-time graph construction, and large workspaces remain readable.
+    const neighbors = requestedIds.length
+      ? await this.db.workspaceTask.findMany({
+          where: {
+            workspaceId,
+            OR: [
+              { id: { in: referencedIds } },
+              { parentId: { in: requestedIds } },
+              { blockedBy: { some: { blockerId: { in: requestedIds } } } },
+            ],
+          },
+          select,
+          orderBy: { id: 'asc' },
+          take: 5001,
+        })
+      : [];
+    const incomplete = neighbors.length > 5000;
+    const rows = [
+      ...new Map(
+        [...seeds, ...neighbors.slice(0, 5000)].map(row => [row.id, row])
+      ).values(),
+    ];
+    const anchors = await this.existingDocumentIds(
+      workspaceId,
+      rows.flatMap(row => (row.legacyDocId ? [row.legacyDocId] : []))
+    );
+    const visibleIds = new Set<string>();
+    for (const row of rows) {
+      if (
+        !row.legacyDocId ||
+        (anchors.has(row.legacyDocId) &&
+          (await this.docAllowed(userId, workspaceId, row.legacyDocId)))
+      )
+        visibleIds.add(row.id);
+    }
+    return new Map(
+      [...summarizeTaskStructure(rows, visibleIds)].map(([id, value]) => [
+        id,
+        {
+          ...value,
+          progress: incomplete ? undefined : value.progress,
+          structureIncomplete: incomplete,
+        },
+      ])
+    );
+  }
+
+  private async validateStructureWrite(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    workspaceId: string,
+    next: { id: string; kind: string; parentId: string | null; status: string },
+    blockerIds?: string[],
+    acknowledge = false,
+    checkStatus = false,
+    checkRelations = true
+  ) {
+    // All hierarchy/dependency mutations serialize per workspace, so two requests
+    // cannot each pass a cycle check and commit a cycle together.
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('affine-task-structure'), hashtext(${workspaceId}))::text`;
+    let rows: StructuredTask[];
+    if (checkRelations) {
+      rows = await this.structureRows(workspaceId, tx);
+    } else {
+      const current = await tx.workspaceTask.findFirst({
+        where: { workspaceId, id: next.id },
+        include: { blockedBy: { select: { blockerId: true } } },
+      });
+      const refs = current?.blockedBy.map(edge => edge.blockerId) ?? [];
+      const blockers = refs.length
+        ? await tx.workspaceTask.findMany({
+            where: { workspaceId, id: { in: refs } },
+            include: { blockedBy: { select: { blockerId: true } } },
+          })
+        : [];
+      rows = [...(current ? [current] : []), ...blockers];
+    }
+    const ids = [
+      ...new Set(
+        blockerIds ??
+          rows
+            .find(row => row.id === next.id)
+            ?.blockedBy.map(edge => edge.blockerId) ??
+          []
+      ),
+    ];
+    const previous = rows.find(row => row.id === next.id);
+    const previousIds = new Set(
+      previous?.blockedBy.map(edge => edge.blockerId)
+    );
+    if (blockerIds !== undefined) {
+      for (const previousId of previousIds) {
+        if (ids.includes(previousId)) continue;
+        try {
+          await this.task(userId, workspaceId, previousId);
+        } catch (error) {
+          if (!(error instanceof NotFound || error instanceof ActionForbidden))
+            throw error;
+          throw new ActionForbidden(
+            'Some existing dependencies are unavailable. Restore access before changing these relationships.'
+          );
+        }
+      }
+    }
+    const unavailable = new Set<string>();
+    for (const id of ids) {
+      try {
+        await this.task(userId, workspaceId, id);
+      } catch (error) {
+        if (
+          !previousIds.has(id) ||
+          !(error instanceof NotFound || error instanceof ActionForbidden)
+        )
+          throw error;
+        // Access revocation must not erase a relationship or prevent an owner
+        // updating their own progress. Its state remains an unknown warning.
+        unavailable.add(id);
+      }
+    }
+    if (next.parentId && next.parentId !== previous?.parentId)
+      await this.task(userId, workspaceId, next.parentId);
+    if (checkRelations) validateTaskStructure(rows, next, ids);
+    if (
+      checkStatus &&
+      ['doing', 'done'].includes(next.status) &&
+      !acknowledge &&
+      ids.some(
+        id =>
+          unavailable.has(id) ||
+          rows.some(row => row.id === id && row.status !== 'done')
+      )
+    )
+      throw taskConflict(
+        'This task has open dependencies. Review them and explicitly acknowledge the warning before continuing.'
+      );
+    return ids;
   }
 
   async members(userId: string, workspaceId: string) {
@@ -390,18 +607,24 @@ export class WorkspaceTasksService {
       .user(userId)
       .workspace(workspaceId)
       .can('Workspace.CreateDoc');
+    const structure = await this.structureSummary(
+      userId,
+      workspaceId,
+      readable.map(row => row.id)
+    );
     const tasks = [];
     for (const row of readable)
-      tasks.push(
-        await this.serialize(
+      tasks.push({
+        ...(await this.serialize(
           userId,
           row,
           row.links.map(l => l.docId).filter(id => allowed.has(id)),
           canWrite,
           false,
           canAdmin
-        )
-      );
+        )),
+        ...structure.get(row.id),
+      });
     return {
       tasks,
       linkedDocs,
@@ -422,16 +645,20 @@ export class WorkspaceTasksService {
       workspaceId,
       links.map(l => l.docId)
     );
-    return this.serialize(
-      userId,
-      row,
-      linked.map(d => d.id),
-      await this.ac
-        .user(userId)
-        .workspace(workspaceId)
-        .can('Workspace.CreateDoc'),
-      true
-    );
+    const summary = await this.structureSummary(userId, workspaceId, [id]);
+    return {
+      ...(await this.serialize(
+        userId,
+        row,
+        linked.map(d => d.id),
+        await this.ac
+          .user(userId)
+          .workspace(workspaceId)
+          .can('Workspace.CreateDoc'),
+        true
+      )),
+      ...summary.get(row.id),
+    };
   }
 
   async context(
@@ -513,12 +740,17 @@ export class WorkspaceTasksService {
     const admin = await this.isAdmin(userId, workspaceId);
     const parsed = parse(createSchema, input);
     if (!admin) this.assertMemberCreate(userId, parsed);
-    const { linkedDocIds, ...value } = parsed;
+    const { linkedDocIds, blockedByIds, acknowledgeOpenBlockers, ...value } =
+      parsed;
     const data = {
       description: '',
       status: 'inbox',
       priority: 'normal',
       blockedReason: '',
+      kind: 'task',
+      parentId: null,
+      estimate: '',
+      doneWhen: '',
       ...value,
       ...(!admin ? { assigneeId: userId } : {}),
     };
@@ -530,11 +762,12 @@ export class WorkspaceTasksService {
       : undefined;
     for (const id of ids)
       await this.assertLink(userId, workspaceId, id, activeIds);
-    return { data, ids };
+    return { data, ids, blockedByIds, acknowledgeOpenBlockers };
   }
 
   async create(userId: string, workspaceId: string, input: unknown) {
-    const { data, ids } = await this.prepareCreate(userId, workspaceId, input);
+    const { data, ids, blockedByIds, acknowledgeOpenBlockers } =
+      await this.prepareCreate(userId, workspaceId, input);
     const row = await this.db.$transaction(async tx => {
       await this.lockActor(tx, userId, workspaceId);
       await this.access(userId, workspaceId, true);
@@ -545,13 +778,26 @@ export class WorkspaceTasksService {
         });
       await this.assignee(workspaceId, data.assigneeId);
       for (const id of ids) await this.assertLink(userId, workspaceId, id);
+      const id = randomUUID();
+      const blockers = await this.validateStructureWrite(
+        tx,
+        userId,
+        workspaceId,
+        { ...data, id },
+        blockedByIds,
+        acknowledgeOpenBlockers,
+        true,
+        !!data.parentId || data.kind === 'subtask' || blockedByIds.length > 0
+      );
       return tx.workspaceTask.create({
         data: {
           ...data,
+          id,
           workspaceId,
           createdBy: userId,
           updatedBy: userId,
           links: { create: ids.map(docId => ({ docId })) },
+          blockedBy: { create: blockers.map(blockerId => ({ blockerId })) },
           activity: { create: { actorId: userId, body: 'Created task.' } },
         },
       });
@@ -567,8 +813,13 @@ export class WorkspaceTasksService {
     assignedOnly = false
   ) {
     const row = await this.task(userId, workspaceId, id, true);
-    const { expectedUpdatedAt, ...patch } = parse(patchSchema, input);
-    if (!Object.keys(patch).length)
+    const {
+      expectedUpdatedAt,
+      blockedByIds,
+      acknowledgeOpenBlockers,
+      ...patch
+    } = parse(patchSchema, input);
+    if (!Object.keys(patch).length && blockedByIds === undefined)
       throw new BadRequest('No task changes provided.');
     const admin = await this.isAdmin(userId, workspaceId);
     if (assignedOnly && row.assigneeId !== userId)
@@ -577,7 +828,16 @@ export class WorkspaceTasksService {
       !admin &&
       (row.assigneeId !== userId ||
         Object.keys(patch).some(
-          key => !['description', 'status', 'blockedReason'].includes(key)
+          key =>
+            ![
+              'description',
+              'status',
+              'blockedReason',
+              'kind',
+              'parentId',
+              'estimate',
+              'doneWhen',
+            ].includes(key)
         ))
     )
       throw new ActionForbidden(
@@ -592,12 +852,48 @@ export class WorkspaceTasksService {
       if (
         !currentAdmin &&
         Object.keys(patch).some(
-          key => !['description', 'status', 'blockedReason'].includes(key)
+          key =>
+            ![
+              'description',
+              'status',
+              'blockedReason',
+              'kind',
+              'parentId',
+              'estimate',
+              'doneWhen',
+            ].includes(key)
         )
       )
         throw new ActionForbidden(
           'Task administration requires a workspace admin.'
         );
+      const structurePatch =
+        blockedByIds !== undefined ||
+        patch.parentId !== undefined ||
+        patch.kind !== undefined ||
+        patch.status !== undefined;
+      const blockers = structurePatch
+        ? await this.validateStructureWrite(
+            tx,
+            userId,
+            workspaceId,
+            {
+              id,
+              kind: patch.kind ?? row.kind ?? 'task',
+              parentId:
+                patch.parentId === undefined
+                  ? (row.parentId ?? null)
+                  : patch.parentId,
+              status: patch.status ?? row.status,
+            },
+            blockedByIds,
+            acknowledgeOpenBlockers,
+            patch.status !== undefined,
+            blockedByIds !== undefined ||
+              patch.parentId !== undefined ||
+              patch.kind !== undefined
+          )
+        : undefined;
       const changed = await tx.workspaceTask.updateMany({
         where: {
           id,
@@ -617,11 +913,17 @@ export class WorkspaceTasksService {
       });
       if (changed.count !== 1)
         throw taskConflict('Task changed. Refresh before saving.');
+      if (blockedByIds !== undefined && blockers) {
+        await tx.taskDependency.deleteMany({ where: { taskId: id } });
+        await tx.taskDependency.createMany({
+          data: blockers.map(blockerId => ({ taskId: id, blockerId })),
+        });
+      }
       await tx.taskActivity.create({
         data: {
           taskId: id,
           actorId: userId,
-          body: `Updated ${Object.keys(patch).sort().join(', ')}.`,
+          body: `Updated ${[...Object.keys(patch), ...(blockedByIds === undefined ? [] : ['dependencies'])].sort().join(', ')}.`,
         },
       });
     });
