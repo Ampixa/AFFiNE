@@ -1,15 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import {
-  Controller,
-  Get,
-  Head,
-  Logger,
-  Param,
-  Query,
-  Req,
-  Res,
-} from '@nestjs/common';
+import { Controller, Get, Head, Logger, Param, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 
 import {
@@ -101,54 +92,43 @@ export class WorkspacesController {
   // get workspace blob
   //
   // NOTE: because graphql can't represent a File, so we have to use REST API to get blob
-  @Public()
   @Get('/:id/blobs/:name')
   @CallMetric('controllers', 'workspace_get_blob')
   async blob(
-    @CurrentUser() user: CurrentUser | undefined,
+    @CurrentUser() user: CurrentUser,
     @Param('id') workspaceId: string,
     @Param('name') name: string,
-    @Query('redirect') redirect: string | undefined,
     @Res() res: Response
   ) {
+    // Legacy URLs remain valid, but neither a public document elsewhere in the
+    // workspace nor a cached/signed storage URL grants access to its files.
+    res.setHeader('cache-control', 'private, no-store');
+    res.setHeader('Vary', 'Cookie, Authorization');
+    const member = await this.models.workspaceUser.getActive(
+      workspaceId,
+      user.id
+    );
+    if (!member) {
+      throw new SpaceAccessDenied({ spaceId: workspaceId });
+    }
     const canReadWorkspace = await this.ac
-      .user(user?.id ?? 'anonymous')
+      .user(user.id)
       .workspace(workspaceId)
       .can('Workspace.Read');
+    if (!canReadWorkspace) {
+      throw new SpaceAccessDenied({ spaceId: workspaceId });
+    }
     const protectedAttachment = name.startsWith(MCP_ATTACHMENT_PREFIX);
     if (protectedAttachment) {
       const docId = mcpAttachmentDocId(name);
       if (
-        !user ||
-        !canReadWorkspace ||
         !docId ||
         !(await this.ac.user(user.id).doc(workspaceId, docId).can('Doc.Read'))
       ) {
         throw new SpaceAccessDenied({ spaceId: workspaceId });
       }
     }
-    const canReadSharedWorkspaceBlobs =
-      !protectedAttachment &&
-      (await this.canReadSharedWorkspaceBlobs(workspaceId));
-    if (!canReadWorkspace && !canReadSharedWorkspaceBlobs) {
-      throw new SpaceAccessDenied({ spaceId: workspaceId });
-    }
-    const { body, metadata, redirectUrl } = await this.storage.get(
-      workspaceId,
-      name,
-      !protectedAttachment
-    );
-
-    if (redirectUrl) {
-      // redirect to signed url
-      if (redirect === 'manual') {
-        return res.send({
-          url: redirectUrl,
-        });
-      } else {
-        return res.redirect(redirectUrl);
-      }
-    }
+    const { body, metadata } = await this.storage.get(workspaceId, name, false);
 
     if (!body) {
       throw new BlobNotFound({
@@ -175,23 +155,7 @@ export class WorkspacesController {
       filename: name,
     });
 
-    // No signed URLs or shared-cache entries for document-scoped MCP files.
-    res.setHeader(
-      'cache-control',
-      protectedAttachment
-        ? 'private, no-store'
-        : 'public, max-age=2592000, immutable'
-    );
-    if (protectedAttachment) res.setHeader('Vary', 'Cookie, Authorization');
     body.pipe(res);
-  }
-
-  private async canReadSharedWorkspaceBlobs(workspaceId: string) {
-    const [sharingEnabled, publicDocs] = await Promise.all([
-      this.models.workspace.allowSharing(workspaceId),
-      this.models.docAccessPolicy.hasPublicExternal(workspaceId),
-    ]);
-    return sharingEnabled && publicDocs;
   }
 
   // get doc binary

@@ -73,9 +73,30 @@ readers still need the original source document's permission. Upload a separate
 attachment for a different audience. Permissions cannot revoke bytes a member
 already downloaded or cached locally in AFFiNE's offline storage.
 
-Existing blob keys keep their current behavior. This change does not migrate,
-rename or retroactively protect historical attachments. Review legacy blob
-sharing separately before distributing sensitive existing links.
+Legacy blob URLs now require an authenticated user with current workspace read
+access. Publishing any document no longer exposes every legacy file in that
+workspace. Existing keys, document blocks and links are unchanged; no database
+migration, blob rename or document rewrite is required.
+
+All workspace blob downloads are streamed through the authenticated endpoint
+with `private, no-store` and `Vary: Cookie, Authorization`. Storage redirects
+and signed GET URLs are disabled, including requests using `?redirect=manual`,
+so each new request checks current access. Public document visitors and
+non-members cannot download legacy files or workspace avatars through this
+endpoint; authorized workspace readers retain their existing URLs.
+
+Legacy blobs have no reliable source-document ownership metadata. Their access
+boundary remains workspace-level, not per-document; the stricter source-document
+check above applies to the reserved MCP namespace. This fix does not infer a
+document ACL from a filename or silently grant guest access. A later migration
+to document-scoped legacy ownership needs an audited reference map.
+
+This cannot revoke bytes already downloaded or previously issued storage URLs
+before they expire. Earlier responses used public immutable caching for 30 days;
+invalidate any shared proxy/CDN caches during rollout. Previously cached browser
+copies may remain readable offline. Recheck direct unauthenticated GET/HEAD and
+redirect variants after deployment; merging this change alone does not protect
+the running service.
 
 ## Failure handling and audit
 
