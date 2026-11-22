@@ -43,6 +43,8 @@ export interface Task {
   updatedAt: number;
   canEdit: boolean;
   canAdmin?: boolean;
+  canArchive?: boolean;
+  canRestore?: boolean;
   canLink?: boolean;
   canComment?: boolean;
   comments?: TaskComment[];
