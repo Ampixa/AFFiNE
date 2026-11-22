@@ -112,6 +112,7 @@ export const Component = () => {
   const [ownerFilter, setOwnerFilter] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [selected, setSelected] = useState<Task | null>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [sourceId, setSourceId] = useState('');
@@ -205,6 +206,12 @@ export const Component = () => {
   const administrative = selected
     ? editable && Boolean(current?.canAdmin)
     : workspace.canAdmin;
+  const canChangeArchive = Boolean(
+    selected?.archived ? current?.canRestore : current?.canArchive
+  );
+  useEffect(() => {
+    if (!open || !canChangeArchive) setArchiveOpen(false);
+  }, [open, canChangeArchive]);
   const canLink = selected
     ? editable && Boolean(current?.canLink)
     : workspace.canCreate;
@@ -393,12 +400,8 @@ export const Component = () => {
     }
   };
   const archive = async () => {
-    if (!selected || !editable || busy) return;
-    if (
-      dirty &&
-      !window.confirm('Archive or restore without saving your other changes?')
-    )
-      return;
+    if (!selected || !canChangeArchive || busy) return;
+    setArchiveOpen(false);
     setBusy(true);
     setFormError('');
     try {
@@ -411,7 +414,7 @@ export const Component = () => {
       setNotice(
         selected.archived
           ? 'Task restored.'
-          : 'Task archived. You can restore it from Archived.'
+          : 'Task archived. An admin can restore it from Archived.'
       );
     } catch (e) {
       setFormError(
@@ -1121,11 +1124,11 @@ export const Component = () => {
                         Open original document
                       </Button>
                     )}
-                    {administrative && (
+                    {canChangeArchive && (
                       <Button
                         variant="plain"
                         disabled={busy}
-                        onClick={() => void archive()}
+                        onClick={() => setArchiveOpen(true)}
                       >
                         {selected.archived ? 'Restore' : 'Archive'}
                       </Button>
@@ -1303,6 +1306,20 @@ export const Component = () => {
           await save(true);
         }}
         onCancel={() => setBlockerConfirm(false)}
+      />
+      <ConfirmModal
+        open={archiveOpen}
+        title={selected?.archived ? 'Restore task?' : 'Archive task?'}
+        description={
+          (selected?.archived
+            ? 'This returns the task to active views. Its documents, comments and history are kept.'
+            : 'This removes the task from active views. Its documents, comments and history are kept. An admin can restore it from Archived.') +
+          (dirty ? ' Unsaved edits will be discarded.' : '')
+        }
+        confirmText={selected?.archived ? 'Restore task' : 'Archive task'}
+        cancelText="Cancel"
+        onConfirm={() => void archive()}
+        onCancel={() => setArchiveOpen(false)}
       />
       <ConfirmModal
         open={discardOpen}

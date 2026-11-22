@@ -11,6 +11,7 @@ import { MailDeliveryRow, Models } from '../../models';
 import { containsUrlOrDomain } from '../content-policy';
 import { DocReader } from '../doc/reader';
 import { WorkspaceBlobStorage } from '../storage';
+import { MCP_ATTACHMENT_PREFIX } from '../storage/mcp-attachment';
 import { MailSender, SendOptions } from './sender';
 import { SendMailPayload } from './types';
 
@@ -277,7 +278,10 @@ export class MailJob {
       name: workspace.name,
     };
 
-    if (workspace.avatarKey) {
+    if (
+      workspace.avatarKey &&
+      !workspace.avatarKey.startsWith(MCP_ATTACHMENT_PREFIX)
+    ) {
       const avatar = await this.workspaceBlob.get(
         workspace.id,
         workspace.avatarKey

@@ -31,6 +31,10 @@ import { PgWorkspaceDocStorageAdapter } from '../doc';
 import { DocReader } from '../doc/reader';
 import { PermissionAccess } from '../permission';
 import { CommentAttachmentStorage, WorkspaceBlobStorage } from '../storage';
+import {
+  MCP_ATTACHMENT_PREFIX,
+  mcpAttachmentDocId,
+} from '../storage/mcp-attachment';
 import { DocID } from '../utils/doc';
 
 @Controller('/api/workspaces')
@@ -111,15 +115,28 @@ export class WorkspacesController {
       .user(user?.id ?? 'anonymous')
       .workspace(workspaceId)
       .can('Workspace.Read');
+    const protectedAttachment = name.startsWith(MCP_ATTACHMENT_PREFIX);
+    if (protectedAttachment) {
+      const docId = mcpAttachmentDocId(name);
+      if (
+        !user ||
+        !canReadWorkspace ||
+        !docId ||
+        !(await this.ac.user(user.id).doc(workspaceId, docId).can('Doc.Read'))
+      ) {
+        throw new SpaceAccessDenied({ spaceId: workspaceId });
+      }
+    }
     const canReadSharedWorkspaceBlobs =
-      await this.canReadSharedWorkspaceBlobs(workspaceId);
+      !protectedAttachment &&
+      (await this.canReadSharedWorkspaceBlobs(workspaceId));
     if (!canReadWorkspace && !canReadSharedWorkspaceBlobs) {
       throw new SpaceAccessDenied({ spaceId: workspaceId });
     }
     const { body, metadata, redirectUrl } = await this.storage.get(
       workspaceId,
       name,
-      true
+      !protectedAttachment
     );
 
     if (redirectUrl) {
@@ -158,7 +175,14 @@ export class WorkspacesController {
       filename: name,
     });
 
-    res.setHeader('cache-control', 'public, max-age=2592000, immutable');
+    // No signed URLs or shared-cache entries for document-scoped MCP files.
+    res.setHeader(
+      'cache-control',
+      protectedAttachment
+        ? 'private, no-store'
+        : 'public, max-age=2592000, immutable'
+    );
+    if (protectedAttachment) res.setHeader('Vary', 'Cookie, Authorization');
     body.pipe(res);
   }
 

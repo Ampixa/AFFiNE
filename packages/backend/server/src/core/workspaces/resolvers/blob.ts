@@ -32,6 +32,10 @@ import {
   MULTIPART_PART_SIZE,
   MULTIPART_THRESHOLD,
 } from '../../storage/constants';
+import {
+  MCP_ATTACHMENT_PREFIX,
+  mcpAttachmentDocId,
+} from '../../storage/mcp-attachment';
 import { WorkspaceType } from '../types';
 
 enum BlobUploadMethod {
@@ -144,7 +148,25 @@ export class WorkspaceBlobResolver {
       .workspace(workspace.id)
       .assert('Workspace.Blobs.List');
 
-    return this.storage.list(workspace.id);
+    const blobs = await this.storage.list(workspace.id);
+    const allowed = new Map<string, boolean>();
+    const visible = [];
+    for (const blob of blobs) {
+      if (!blob.key.startsWith(MCP_ATTACHMENT_PREFIX)) {
+        visible.push(blob);
+        continue;
+      }
+      const docId = mcpAttachmentDocId(blob.key);
+      if (!docId) continue;
+      if (!allowed.has(docId)) {
+        allowed.set(
+          docId,
+          await this.ac.user(user.id).doc(workspace.id, docId).can('Doc.Read')
+        );
+      }
+      if (allowed.get(docId)) visible.push(blob);
+    }
+    return visible;
   }
 
   @ResolveField(() => Int, {
@@ -175,6 +197,7 @@ export class WorkspaceBlobResolver {
     @Args({ name: 'blob', type: () => GraphQLUpload })
     blob: FileUpload
   ) {
+    this.assertOrdinaryBlobKey(blob.filename);
     await this.ac
       .user(user.id)
       .workspace(workspaceId)
@@ -204,6 +227,7 @@ export class WorkspaceBlobResolver {
     @Args('size', { type: () => Int }) size: number,
     @Args('mime') mime: string
   ): Promise<BlobUploadInit> {
+    this.assertOrdinaryBlobKey(key);
     await this.ac
       .user(user.id)
       .workspace(workspaceId)
@@ -343,6 +367,7 @@ export class WorkspaceBlobResolver {
     })
     parts?: BlobUploadPartInput[]
   ): Promise<string> {
+    this.assertOrdinaryBlobKey(key);
     await this.ac
       .user(user.id)
       .workspace(workspaceId)
@@ -418,6 +443,7 @@ export class WorkspaceBlobResolver {
     @Args('key') key: string,
     @Args('uploadId') uploadId: string
   ) {
+    this.assertOrdinaryBlobKey(key);
     await this.ac
       .user(user.id)
       .workspace(workspaceId)
@@ -433,6 +459,7 @@ export class WorkspaceBlobResolver {
     uploadId: string,
     partNumber: number
   ): Promise<BlobUploadPart> {
+    this.assertOrdinaryBlobKey(key);
     await this.ac
       .user(user.id)
       .workspace(workspaceId)
@@ -473,6 +500,7 @@ export class WorkspaceBlobResolver {
     if (!key) {
       return false;
     }
+    this.assertOrdinaryBlobKey(key);
 
     await this.ac
       .user(user.id)
@@ -482,6 +510,16 @@ export class WorkspaceBlobResolver {
     await this.storage.delete(workspaceId, key, permanently);
 
     return true;
+  }
+
+  private assertOrdinaryBlobKey(key: string) {
+    // MCP files are immutable and document-scoped. The generic blob APIs only
+    // check workspace permission, so they must not overwrite or delete them.
+    if (key.startsWith(MCP_ATTACHMENT_PREFIX)) {
+      throw new BlobInvalid(
+        'MCP attachment files cannot be changed through generic blob APIs. Remove the attachment block from its document instead.'
+      );
+    }
   }
 
   @Mutation(() => Boolean)

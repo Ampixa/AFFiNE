@@ -25,7 +25,19 @@ const SVG_DATA_URL_PATTERN =
 const SAFE_IMAGE_DATA_URL_PATTERN =
   /^data:image\/(?:png|jpe?g|gif|webp|svg\+xml);base64,[a-z0-9+/=]+$/i;
 const UNSAFE_CSS_PATTERN =
-  /(?:url\s*\(|@import|javascript\s*:|expression\s*\(|-moz-binding)/i;
+  /(?:url\s*\(|@import|javascript\s*:|expression\s*\(|-moz-binding|\\|\/\*)/i;
+
+function hasUnsafeCss(css: string) {
+  // Mermaid's dark palette includes gradient references, even for diagrams
+  // that do not use those gradients. Dropping the whole stylesheet loses the
+  // node/label contrast. Permit only literal local fragment URLs; external,
+  // data, escaped and commented URL forms still fail closed.
+  const withoutLocalReferences = css.replace(
+    /url\(\s*(?:#[\w-]+|"#[\w-]+"|'#[\w-]+')\s*\)/gi,
+    ''
+  );
+  return UNSAFE_CSS_PATTERN.test(withoutLocalReferences);
+}
 
 const SVG_ROOT_ATTRIBUTES = [
   'class',
@@ -244,13 +256,13 @@ function tightenSvgTree(
     });
 
     const style = element.getAttribute('style');
-    if (style && UNSAFE_CSS_PATTERN.test(style)) {
+    if (style && hasUnsafeCss(style)) {
       element.removeAttribute('style');
     }
 
     if (
       element.tagName.toLowerCase() === 'style' &&
-      UNSAFE_CSS_PATTERN.test(element.textContent ?? '')
+      hasUnsafeCss(element.textContent ?? '')
     ) {
       element.remove();
     }
