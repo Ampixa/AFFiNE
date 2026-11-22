@@ -125,53 +125,49 @@ function blob() {
 }
 
 // blob
-test('should be able to get blob from public workspace', async t => {
+test('public workspace does not grant anonymous or non-member blob access', async t => {
   const { app, storage } = t.context;
 
   // no authenticated user
+  app.clearAuth();
   storage.get.resolves(blob());
   let res = await app.GET('/api/workspaces/public/blobs/test');
 
-  t.is(res.status, HttpStatus.OK);
-  t.is(res.get('content-type'), 'text/plain');
-  t.is(res.text, 'blob');
+  t.is(res.status, HttpStatus.UNAUTHORIZED);
 
   // authenticated user
   await app.login(t.context.u1);
   res = await app.GET('/api/workspaces/public/blobs/test');
 
-  t.is(res.status, HttpStatus.OK);
-  t.is(res.get('content-type'), 'text/plain');
-  t.is(res.text, 'blob');
+  t.is(res.status, HttpStatus.FORBIDDEN);
 });
 
-test('should be able to get private workspace with public pages', async t => {
+test('public pages do not expose unrelated workspace blobs', async t => {
   const { app, storage } = t.context;
 
   // no authenticated user
+  app.clearAuth();
   storage.get.resolves(blob());
   let res = await app.GET('/api/workspaces/private/blobs/test');
 
-  t.is(res.status, HttpStatus.OK);
-  t.is(res.get('content-type'), 'text/plain');
-  t.is(res.text, 'blob');
+  t.is(res.status, HttpStatus.UNAUTHORIZED);
 
   // authenticated user
   await app.login(t.context.u1);
   res = await app.GET('/api/workspaces/private/blobs/test');
 
-  t.is(res.status, HttpStatus.OK);
-  t.is(res.get('content-type'), 'text/plain');
-  t.is(res.text, 'blob');
+  t.is(res.status, HttpStatus.FORBIDDEN);
 });
 
 test('should not be able to get private workspace with no public pages', async t => {
   const { app } = t.context;
 
+  app.clearAuth();
   let res = await app.GET('/api/workspaces/totally-private/blobs/test');
 
-  t.is(res.status, HttpStatus.FORBIDDEN);
+  t.is(res.status, HttpStatus.UNAUTHORIZED);
 
+  await app.login(t.context.u1);
   res = await app.GET('/api/workspaces/totally-private/blobs/test');
 
   t.is(res.status, HttpStatus.FORBIDDEN);
@@ -193,19 +189,74 @@ test('should be able to get permission granted workspace', async t => {
 
   t.is(res.status, HttpStatus.OK);
   t.is(res.text, 'blob');
+  t.is(res.get('cache-control'), 'private, no-store');
+  t.is(res.get('vary'), 'Cookie, Authorization');
+  t.true(storage.get.lastCall.calledWith('totally-private', 'test', false));
+});
+
+test('legacy blob redirects stay authenticated and stream through the server', async t => {
+  const { app, storage, u1 } = t.context;
+  for (const suffix of ['', '?redirect=manual', '?redirect=true']) {
+    app.clearAuth();
+    storage.get.resetHistory();
+    const url = `/api/workspaces/totally-private/blobs/test${suffix}`;
+    t.is((await app.GET(url)).status, HttpStatus.UNAUTHORIZED);
+    t.false(storage.get.called);
+    await app.login(u1);
+    storage.get.resolves(blob());
+    const res = await app.GET(url);
+    t.is(res.status, HttpStatus.OK);
+    t.is(res.text, 'blob');
+    t.is(res.get('location'), undefined);
+    t.is(res.get('cache-control'), 'private, no-store');
+    t.true(storage.get.lastCall.calledWith('totally-private', 'test', false));
+  }
+});
+
+test('suspension and removal revoke blob access for an existing session', async t => {
+  const { app, db, storage, u1, models } = t.context;
+  await app.login(u1);
+  try {
+    for (const state of ['suspended', 'removed'] as const) {
+      if (state === 'removed') {
+        await db.workspaceMember.deleteMany({
+          where: { workspaceId: 'totally-private', userId: u1.id },
+        });
+      } else {
+        await db.workspaceMember.updateMany({
+          where: { workspaceId: 'totally-private', userId: u1.id },
+          data: { state },
+        });
+      }
+      storage.get.resetHistory();
+      const res = await app.GET('/api/workspaces/totally-private/blobs/test');
+      t.is(res.status, HttpStatus.FORBIDDEN);
+      t.false(storage.get.called);
+    }
+  } finally {
+    await models.workspaceUser.set(
+      'totally-private',
+      u1.id,
+      WorkspaceRole.Collaborator,
+      {
+        status: WorkspaceMemberStatus.Accepted,
+      }
+    );
+  }
 });
 
 test('should return 404 if blob not found', async t => {
   const { app, storage } = t.context;
 
   storage.get.resolves({ body: undefined });
-  const res = await app.GET('/api/workspaces/public/blobs/test');
+  await app.login(t.context.u1);
+  const res = await app.GET('/api/workspaces/totally-private/blobs/test');
 
   t.is(res.status, HttpStatus.NOT_FOUND);
 });
 
 // doc
-// NOTE: permission checking of doc api is the same with blob api, skip except one
+// Documents retain their own sharing rules; blob access requires membership.
 test('should not be able to get private workspace with private page', async t => {
   const { app } = t.context;
 
