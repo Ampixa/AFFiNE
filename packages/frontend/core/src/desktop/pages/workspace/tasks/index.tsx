@@ -105,7 +105,7 @@ export const Component = () => {
   const [scope, setScope] = useState('all');
   const [view, setView] = useState<'list' | 'board' | 'dependencies'>('list');
   const [epicFilter, setEpicFilter] = useState('');
-  const [blockerConfirm, setBlockerConfirm] = useState(false);
+  const [blockerReview, setBlockerReview] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
@@ -121,6 +121,10 @@ export const Component = () => {
   const [notice, setNotice] = useState('');
   const [initialDraft, setInitialDraft] = useState('');
   const [documentSearch, setDocumentSearch] = useState('');
+  const tasksById = useMemo(
+    () => new Map(workspace.tasks.map(task => [task.id, task])),
+    [workspace.tasks]
+  );
 
   const filtered = useMemo(
     () =>
@@ -136,7 +140,7 @@ export const Component = () => {
             (scope !== 'attention' ||
               t.status === 'blocked' ||
               t.status === 'review') &&
-            (!epicFilter || taskInEpic(t, epicFilter, workspace.tasks)) &&
+            (!epicFilter || taskInEpic(t, epicFilter, tasksById)) &&
             (!statusFilter || t.status === statusFilter) &&
             (!priorityFilter || t.priority === priorityFilter) &&
             (!ownerFilter.length || ownerFilter.includes(t.assigneeId || '')) &&
@@ -152,6 +156,7 @@ export const Component = () => {
         ),
     [
       workspace.tasks,
+      tasksById,
       workspace.currentUserId,
       scope,
       statusFilter,
@@ -202,6 +207,17 @@ export const Component = () => {
   const current = selected
     ? workspace.tasks.find(t => t.id === selected.id)
     : null;
+  const dependencyReviewKey = JSON.stringify({
+    task: selected?.id ?? null,
+    revision: current?.updatedAt,
+    status: draft.status,
+    hidden: current?.hiddenBlockers,
+    prerequisites: (draft.blockedByIds ?? []).map(id => [
+      id,
+      (tasksById.get(id) ?? current?.blockers?.find(t => t.id === id))
+        ?.status ?? null,
+    ]),
+  });
   const editable = selected ? Boolean(current?.canEdit) : workspace.canCreate;
   const administrative = selected
     ? editable && Boolean(current?.canAdmin)
@@ -212,6 +228,10 @@ export const Component = () => {
   useEffect(() => {
     if (!open || !canChangeArchive) setArchiveOpen(false);
   }, [open, canChangeArchive]);
+  useEffect(() => {
+    if (!open || !editable || blockerReview !== dependencyReviewKey)
+      setBlockerReview(null);
+  }, [open, editable, blockerReview, dependencyReviewKey]);
   const canLink = selected
     ? editable && Boolean(current?.canLink)
     : workspace.canCreate;
@@ -349,11 +369,13 @@ export const Component = () => {
       ['doing', 'done'].includes(draft.status) &&
       draft.status !== selected?.status &&
       (current?.hiddenBlockers ||
-        (draft.blockedByIds ?? []).some(id =>
-          workspace.tasks.some(task => task.id === id && task.status !== 'done')
-        ))
+        (draft.blockedByIds ?? []).some(id => {
+          const task =
+            tasksById.get(id) ?? current?.blockers?.find(t => t.id === id);
+          return !task || task.status !== 'done';
+        }))
     ) {
-      setBlockerConfirm(true);
+      setBlockerReview(dependencyReviewKey);
       return;
     }
     setBusy(true);
@@ -976,7 +998,7 @@ export const Component = () => {
                     <button
                       key={task.id}
                       className={styles.titleButton}
-                      disabled={dirty}
+                      disabled={dirty || busy || Boolean(commentBody.trim())}
                       onClick={() => {
                         const target = workspace.tasks.find(
                           t => t.id === task.id
@@ -1296,16 +1318,19 @@ export const Component = () => {
         )}
       </Modal>
       <ConfirmModal
-        open={blockerConfirm}
+        open={Boolean(
+          open && editable && blockerReview === dependencyReviewKey
+        )}
         title="Continue with open dependencies?"
         description="This task still depends on unfinished work. You can continue if this is intentional; the dependency warning stays visible until the prerequisites are done."
         confirmText="Continue anyway"
         cancelText="Review dependencies"
         onConfirm={async () => {
-          setBlockerConfirm(false);
+          if (blockerReview !== dependencyReviewKey) return;
+          setBlockerReview(null);
           await save(true);
         }}
-        onCancel={() => setBlockerConfirm(false)}
+        onCancel={() => setBlockerReview(null)}
       />
       <ConfirmModal
         open={archiveOpen}

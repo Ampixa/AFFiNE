@@ -13,7 +13,12 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
-import { type Prisma, PrismaClient, type WorkspaceTask } from '@prisma/client';
+import {
+  type Prisma,
+  PrismaClient,
+  type TaskPlanning,
+  type WorkspaceTask,
+} from '@prisma/client';
 import type { Request } from 'express';
 import { applyUpdate, Array as YArray, Doc as YDoc, Map as YMap } from 'yjs';
 import { z } from 'zod';
@@ -33,6 +38,67 @@ import {
   summarizeTaskStructure,
   validateTaskStructure,
 } from './task-structure';
+
+// Planning is an optional extension of a task. Ordinary and imported task
+// records keep their existing scalar contract and default to an ungrouped task.
+const relatedTaskSelect = {
+  id: true,
+  title: true,
+  status: true,
+  archived: true,
+  legacyDocId: true,
+  planning: { select: { kind: true, parentId: true } },
+} satisfies Prisma.WorkspaceTaskSelect;
+
+function structureInclude(pageSize = 1) {
+  // The page-wide children/dependents budget is bounded. Prerequisites have a
+  // separate API limit of 50 per task; retain all of them for truthful warnings.
+  const limit = Math.min(200, Math.max(1, Math.floor(2500 / pageSize)));
+  return {
+    planning: { include: { parent: { select: relatedTaskSelect } } },
+    childPlans: {
+      select: { task: { select: relatedTaskSelect } },
+      orderBy: { taskId: 'asc' as const },
+      take: limit + 1,
+    },
+    blockedBy: {
+      select: { blockerId: true, blocker: { select: relatedTaskSelect } },
+      orderBy: { blockerId: 'asc' as const },
+      take: 51,
+    },
+    blocks: {
+      select: { task: { select: relatedTaskSelect } },
+      orderBy: { taskId: 'asc' as const },
+      take: limit + 1,
+    },
+  } satisfies Prisma.WorkspaceTaskInclude;
+}
+
+type RelatedTask = Pick<
+  WorkspaceTask,
+  'id' | 'title' | 'status' | 'archived' | 'legacyDocId'
+> & { planning?: Pick<TaskPlanning, 'kind' | 'parentId'> | null };
+type TaskReadRow = WorkspaceTask & {
+  planning?: (TaskPlanning & { parent?: RelatedTask | null }) | null;
+  childPlans?: { task: RelatedTask }[];
+  blockedBy?: { blockerId: string; blocker: RelatedTask }[];
+  blocks?: { task: RelatedTask }[];
+};
+
+function structuredTask(
+  row: RelatedTask & { blockedBy?: { blockerId: string }[] }
+): StructuredTask {
+  return {
+    id: row.id,
+    title: row.title,
+    status: row.status,
+    archived: row.archived,
+    legacyDocId: row.legacyDocId,
+    kind: row.planning?.kind ?? 'task',
+    parentId: row.planning?.parentId ?? null,
+    blockedBy: row.blockedBy ?? [],
+  };
+}
 
 const identifier = z.string().min(1).max(128);
 const fields = z.object({
@@ -221,11 +287,13 @@ export class WorkspaceTasksService {
     userId: string,
     workspaceId: string,
     id: string,
-    write = false
+    write = false,
+    structure = false
   ) {
     await this.access(userId, workspaceId, write);
     const task = await this.db.workspaceTask.findFirst({
       where: { id, workspaceId },
+      include: structure ? structureInclude() : { planning: true },
     });
     if (
       !task ||
@@ -297,7 +365,7 @@ export class WorkspaceTasksService {
 
   private async serialize(
     userId: string,
-    row: WorkspaceTask,
+    row: TaskReadRow,
     linkedDocIds: string[],
     canWrite: boolean,
     detail = false,
@@ -341,9 +409,9 @@ export class WorkspaceTasksService {
       assigneeId: row.assigneeId,
       dueDate: row.dueDate,
       blockedReason: row.blockedReason,
-      kind: row.kind ?? 'task',
-      estimate: row.estimate ?? '',
-      doneWhen: row.doneWhen ?? '',
+      kind: row.planning?.kind ?? 'task',
+      estimate: row.planning?.estimate ?? '',
+      doneWhen: row.planning?.doneWhen ?? '',
       updatedAt: row.updatedAt.getTime(),
       version: row.version,
       detailDocId: row.legacyDocId,
@@ -371,8 +439,7 @@ export class WorkspaceTasksService {
         title: true,
         status: true,
         archived: true,
-        kind: true,
-        parentId: true,
+        planning: { select: { kind: true, parentId: true } },
         legacyDocId: true,
         blockedBy: { select: { blockerId: true } },
       },
@@ -381,72 +448,55 @@ export class WorkspaceTasksService {
       throw new BadRequest(
         'Relationship editing supports up to 5,000 workspace tasks. Ordinary task creation and progress updates remain available.'
       );
-    return rows.map(row => ({
-      ...row,
-      kind: row.kind ?? 'task',
-      parentId: row.parentId ?? null,
-      blockedBy: row.blockedBy ?? [],
-    }));
+    return rows.map(structuredTask);
   }
 
   private async structureSummary(
     userId: string,
     workspaceId: string,
-    requestedIds: string[]
+    seeds: TaskReadRow[],
+    pageSize = 1
   ) {
-    const select = {
-      id: true,
-      title: true,
-      status: true,
-      archived: true,
-      kind: true,
-      parentId: true,
-      legacyDocId: true,
-      blockedBy: { select: { blockerId: true } },
-    } satisfies Prisma.WorkspaceTaskSelect;
-    const seeds = requestedIds.length
-      ? await this.db.workspaceTask.findMany({
-          where: { workspaceId, id: { in: requestedIds } },
-          select,
-        })
-      : [];
-    const referencedIds = [
-      ...new Set(
-        seeds.flatMap(row => [
-          ...(row.parentId ? [row.parentId] : []),
-          ...row.blockedBy.map(edge => edge.blockerId),
-        ])
-      ),
-    ];
-    // Only direct neighbors of this page. Unrelated workspace tasks never enter
-    // read-time graph construction, and large workspaces remain readable.
-    const neighbors = requestedIds.length
-      ? await this.db.workspaceTask.findMany({
-          where: {
-            workspaceId,
-            OR: [
-              { id: { in: referencedIds } },
-              { parentId: { in: requestedIds } },
-              { blockedBy: { some: { blockerId: { in: requestedIds } } } },
-            ],
-          },
-          select,
-          orderBy: { id: 'asc' },
-          take: 5001,
-        })
-      : [];
-    const incomplete = neighbors.length > 5000;
-    const rows = [
-      ...new Map(
-        [...seeds, ...neighbors.slice(0, 5000)].map(row => [row.id, row])
-      ).values(),
-    ];
+    const limit = structureInclude(pageSize).childPlans.take - 1;
+    const neighborhoods = seeds.map(seed => {
+      const children = seed.childPlans ?? [];
+      const blocks = seed.blocks ?? [];
+      const blockers = seed.blockedBy ?? [];
+      const related = [
+        ...(seed.planning?.parent ? [seed.planning.parent] : []),
+        ...children.slice(0, limit).map(edge => edge.task),
+        ...blockers.map(edge => edge.blocker),
+        ...blocks.slice(0, limit).map(edge => edge.task),
+      ];
+      const rows = new Map(related.map(row => [row.id, structuredTask(row)]));
+      for (const edge of blocks.slice(0, limit))
+        rows.set(edge.task.id, {
+          ...structuredTask(edge.task),
+          blockedBy: [{ blockerId: seed.id }],
+        });
+      rows.set(seed.id, structuredTask(seed));
+      return {
+        seed,
+        rows: [...rows.values()],
+        incomplete:
+          children.length > limit ||
+          blocks.length > limit ||
+          blockers.length > 50,
+      };
+    });
+    const all = new Map(
+      neighborhoods.flatMap(({ rows }) =>
+        rows.map(row => [row.id, row] as const)
+      )
+    );
     const anchors = await this.existingDocumentIds(
       workspaceId,
-      rows.flatMap(row => (row.legacyDocId ? [row.legacyDocId] : []))
+      [...all.values()].flatMap(row =>
+        row.legacyDocId ? [row.legacyDocId] : []
+      )
     );
     const visibleIds = new Set<string>();
-    for (const row of rows) {
+    for (const row of all.values()) {
       if (
         !row.legacyDocId ||
         (anchors.has(row.legacyDocId) &&
@@ -455,14 +505,30 @@ export class WorkspaceTasksService {
         visibleIds.add(row.id);
     }
     return new Map(
-      [...summarizeTaskStructure(rows, visibleIds)].map(([id, value]) => [
-        id,
-        {
-          ...value,
-          progress: incomplete ? undefined : value.progress,
-          structureIncomplete: incomplete,
-        },
-      ])
+      neighborhoods.map(({ seed, rows, incomplete }) => {
+        const value = summarizeTaskStructure(rows, visibleIds).get(seed.id);
+        return [
+          seed.id,
+          {
+            ...value,
+            progress: incomplete ? undefined : value?.progress,
+            structureIncomplete: incomplete,
+            // Subscribe only to permitted anchors. Hidden relationships must never
+            // disclose their document IDs, titles or status through this field.
+            structureDocIds: [
+              ...new Set(
+                rows.flatMap(row =>
+                  row.id !== seed.id &&
+                  visibleIds.has(row.id) &&
+                  row.legacyDocId
+                    ? [row.legacyDocId]
+                    : []
+                )
+              ),
+            ],
+          },
+        ];
+      })
     );
   }
 
@@ -485,16 +551,19 @@ export class WorkspaceTasksService {
     } else {
       const current = await tx.workspaceTask.findFirst({
         where: { workspaceId, id: next.id },
-        include: { blockedBy: { select: { blockerId: true } } },
+        include: { planning: true, blockedBy: { select: { blockerId: true } } },
       });
-      const refs = current?.blockedBy.map(edge => edge.blockerId) ?? [];
+      const refs = current?.blockedBy?.map(edge => edge.blockerId) ?? [];
       const blockers = refs.length
         ? await tx.workspaceTask.findMany({
             where: { workspaceId, id: { in: refs } },
-            include: { blockedBy: { select: { blockerId: true } } },
+            include: {
+              planning: true,
+              blockedBy: { select: { blockerId: true } },
+            },
           })
         : [];
-      rows = [...(current ? [current] : []), ...blockers];
+      rows = [...(current ? [current] : []), ...blockers].map(structuredTask);
     }
     const ids = [
       ...new Set(
@@ -585,7 +654,7 @@ export class WorkspaceTasksService {
       where: { workspaceId, ...(docId ? { links: { some: { docId } } } : {}) },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       ...paging,
-      include: { links: true },
+      include: { links: true, ...structureInclude(paging.take) },
     });
     const anchors = await this.existingDocumentIds(
       workspaceId,
@@ -617,7 +686,8 @@ export class WorkspaceTasksService {
     const structure = await this.structureSummary(
       userId,
       workspaceId,
-      readable.map(row => row.id)
+      readable,
+      paging.take
     );
     const tasks = [];
     for (const row of readable)
@@ -643,7 +713,7 @@ export class WorkspaceTasksService {
   }
 
   async get(userId: string, workspaceId: string, id: string) {
-    const row = await this.task(userId, workspaceId, id);
+    const row = await this.task(userId, workspaceId, id, false, true);
     const links = await this.db.taskDocumentLink.findMany({
       where: { taskId: id },
     });
@@ -652,7 +722,7 @@ export class WorkspaceTasksService {
       workspaceId,
       links.map(l => l.docId)
     );
-    const summary = await this.structureSummary(userId, workspaceId, [id]);
+    const summary = await this.structureSummary(userId, workspaceId, [row]);
     return {
       ...(await this.serialize(
         userId,
@@ -796,18 +866,31 @@ export class WorkspaceTasksService {
         true,
         !!data.parentId || data.kind === 'subtask' || blockedByIds.length > 0
       );
-      return tx.workspaceTask.create({
+      const { kind, parentId, estimate, doneWhen, ...ordinary } = data;
+      const created = await tx.workspaceTask.create({
         data: {
-          ...data,
+          ...ordinary,
           id,
           workspaceId,
           createdBy: userId,
           updatedBy: userId,
           links: { create: ids.map(docId => ({ docId })) },
-          blockedBy: { create: blockers.map(blockerId => ({ blockerId })) },
           activity: { create: { actorId: userId, body: 'Created task.' } },
         },
       });
+      if (kind !== 'task' || parentId || estimate || doneWhen)
+        await tx.taskPlanning.create({
+          data: { taskId: id, workspaceId, kind, parentId, estimate, doneWhen },
+        });
+      if (blockers.length)
+        await tx.taskDependency.createMany({
+          data: blockers.map(blockerId => ({
+            taskId: id,
+            workspaceId,
+            blockerId,
+          })),
+        });
+      return created;
     });
     return this.get(userId, workspaceId, row.id);
   }
@@ -918,7 +1001,8 @@ export class WorkspaceTasksService {
         blockedByIds !== undefined ||
         patch.parentId !== undefined ||
         patch.kind !== undefined ||
-        patch.status !== undefined;
+        patch.status !== undefined ||
+        patch.archived !== undefined;
       const blockers = structurePatch
         ? await this.validateStructureWrite(
             tx,
@@ -926,12 +1010,12 @@ export class WorkspaceTasksService {
             workspaceId,
             {
               id,
-              kind: patch.kind ?? row.kind ?? 'task',
+              kind: patch.kind ?? current.planning?.kind ?? 'task',
               parentId:
                 patch.parentId === undefined
-                  ? (row.parentId ?? null)
+                  ? (current.planning?.parentId ?? null)
                   : patch.parentId,
-              status: patch.status ?? row.status,
+              status: patch.status ?? current.status,
             },
             blockedByIds,
             acknowledgeOpenBlockers,
@@ -941,6 +1025,13 @@ export class WorkspaceTasksService {
               patch.kind !== undefined
           )
         : undefined;
+      const { kind, parentId, estimate, doneWhen, ...ordinary } = patch;
+      const planningPatch = {
+        ...(kind === undefined ? {} : { kind }),
+        ...(parentId === undefined ? {} : { parentId }),
+        ...(estimate === undefined ? {} : { estimate }),
+        ...(doneWhen === undefined ? {} : { doneWhen }),
+      };
       const changed = await tx.workspaceTask.updateMany({
         where: {
           id,
@@ -954,7 +1045,7 @@ export class WorkspaceTasksService {
           updatedAt: new Date(expectedUpdatedAt),
         },
         data: {
-          ...patch,
+          ...ordinary,
           updatedBy: userId,
           version: { increment: 1 },
           updatedAt: new Date(
@@ -964,10 +1055,20 @@ export class WorkspaceTasksService {
       });
       if (changed.count !== 1)
         throw taskConflict('Task changed. Refresh before saving.');
+      if (Object.keys(planningPatch).length)
+        await tx.taskPlanning.upsert({
+          where: { taskId: id },
+          create: { taskId: id, workspaceId, ...planningPatch },
+          update: planningPatch,
+        });
       if (blockedByIds !== undefined && blockers) {
         await tx.taskDependency.deleteMany({ where: { taskId: id } });
         await tx.taskDependency.createMany({
-          data: blockers.map(blockerId => ({ taskId: id, blockerId })),
+          data: blockers.map(blockerId => ({
+            workspaceId,
+            taskId: id,
+            blockerId,
+          })),
         });
       }
       await tx.taskActivity.create({

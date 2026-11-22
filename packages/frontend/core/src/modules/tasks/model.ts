@@ -67,6 +67,8 @@ export interface Task {
   blocks?: TaskRelation[];
   hasOpenBlockers?: boolean;
   hiddenBlockers?: boolean;
+  /** Permitted document anchors for related-task metadata and progress. */
+  structureDocIds?: string[];
   structureIncomplete?: boolean;
   progress?: { done: number; total: number };
 }

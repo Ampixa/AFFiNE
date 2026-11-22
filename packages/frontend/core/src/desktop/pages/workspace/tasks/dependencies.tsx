@@ -1,10 +1,13 @@
 import type { Task } from '@affine/core/modules/tasks/model';
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 
 import * as styles from './index.css';
 
-export function taskInEpic(task: Task, epicId: string, tasks: Task[]) {
-  const byId = new Map(tasks.map(value => [value.id, value]));
+export function taskInEpic(
+  task: Task,
+  epicId: string,
+  byId: ReadonlyMap<string, Task>
+) {
   const seen = new Set<string>();
   let current: Task | undefined = task;
   while (current && !seen.has(current.id)) {
@@ -22,6 +25,7 @@ export function TaskDependencies({
   tasks: Task[];
   onOpen: (task: Task) => void;
 }) {
+  const arrowId = useId();
   const layout = useMemo(() => {
     const byId = new Map(tasks.map(task => [task.id, task]));
     const level = new Map<string, number>();
@@ -64,7 +68,11 @@ export function TaskDependencies({
   }, [tasks]);
   const nodes = new Map(layout.nodes.map(node => [node.task.id, node]));
   return (
-    <div className={styles.dependencyScroll} aria-label="Task dependencies">
+    <div
+      className={styles.dependencyScroll}
+      role="region"
+      aria-label="Task dependencies"
+    >
       <div
         style={{
           position: 'relative',
@@ -80,7 +88,7 @@ export function TaskDependencies({
         >
           <defs>
             <marker
-              id="task-dependency-arrow"
+              id={arrowId}
               markerWidth="8"
               markerHeight="8"
               refX="7"
@@ -101,7 +109,7 @@ export function TaskDependencies({
                   fill="none"
                   stroke="currentColor"
                   strokeWidth="1.5"
-                  markerEnd="url(#task-dependency-arrow)"
+                  markerEnd={`url(#${arrowId})`}
                 />
               );
             })
